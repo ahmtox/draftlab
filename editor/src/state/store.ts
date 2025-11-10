@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { Viewport } from '../renderers/konva/viewport';
 import type { Scene } from '../core/domain/types';
+import type { ProjectMeta } from '../services/file-storage';
 import { DEFAULT_ZOOM_SCALE } from '../core/constants';
 
 type WallParams = {
@@ -14,11 +15,23 @@ type UIState = {
   activeTool: 'select' | 'wall' | 'room';
   wallParams: WallParams;
   scene: Scene;
+  currentProject: ProjectMeta | null;
+  lastSavedAt: number | null;
+  isSaving: boolean;
   setViewport: (viewport: Viewport) => void;
   setActiveTool: (tool: 'select' | 'wall' | 'room') => void;
   setWallParams: (params: WallParams) => void;
   setScene: (scene: Scene) => void;
+  setCurrentProject: (project: ProjectMeta | null) => void;
+  setLastSavedAt: (timestamp: number) => void;
+  setIsSaving: (saving: boolean) => void;
+  resetProject: () => void;
 };
+
+const getEmptyScene = (): Scene => ({
+  nodes: new Map(),
+  walls: new Map(),
+});
 
 export const useStore = create<UIState>((set) => ({
   viewport: {
@@ -32,12 +45,21 @@ export const useStore = create<UIState>((set) => ({
     heightMm: 3000,
     raiseFromFloorMm: 0,
   },
-  scene: {
-    nodes: new Map(),
-    walls: new Map(),
-  },
+  scene: getEmptyScene(),
+  currentProject: null,
+  lastSavedAt: null,
+  isSaving: false,
   setViewport: (viewport) => set({ viewport }),
   setActiveTool: (tool) => set({ activeTool: tool }),
   setWallParams: (params) => set({ wallParams: params }),
   setScene: (scene) => set({ scene }),
+  setCurrentProject: (project) => set({ currentProject: project }),
+  setLastSavedAt: (timestamp) => set({ lastSavedAt: timestamp }),
+  setIsSaving: (saving) => set({ isSaving: saving }),
+  resetProject: () => set({ 
+    scene: getEmptyScene(),
+    currentProject: null,
+    lastSavedAt: null,
+    isSaving: false,
+  }),
 }));
