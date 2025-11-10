@@ -18,6 +18,8 @@ type UIState = {
   currentProject: ProjectMeta | null;
   lastSavedAt: number | null;
   isSaving: boolean;
+  selectedWallId: string | null;
+  hoveredWallId: string | null;
   setViewport: (viewport: Viewport) => void;
   setActiveTool: (tool: 'select' | 'wall' | 'room') => void;
   setWallParams: (params: WallParams) => void;
@@ -26,6 +28,8 @@ type UIState = {
   setLastSavedAt: (timestamp: number) => void;
   setIsSaving: (saving: boolean) => void;
   resetProject: () => void;
+  setSelectedWallId: (id: string | null) => void;
+  setHoveredWallId: (id: string | null) => void;
 };
 
 const getEmptyScene = (): Scene => ({
@@ -49,6 +53,8 @@ export const useStore = create<UIState>((set) => ({
   currentProject: null,
   lastSavedAt: null,
   isSaving: false,
+  selectedWallId: null,
+  hoveredWallId: null,
   setViewport: (viewport) => set({ viewport }),
   setActiveTool: (tool) => set({ activeTool: tool }),
   setWallParams: (params) => set({ wallParams: params }),
@@ -61,5 +67,9 @@ export const useStore = create<UIState>((set) => ({
     currentProject: null,
     lastSavedAt: null,
     isSaving: false,
+    selectedWallId: null,
+    hoveredWallId: null,
   }),
+  setSelectedWallId: (id) => set({ selectedWallId: id }),
+  setHoveredWallId: (id) => set({ hoveredWallId: id }),
 }));

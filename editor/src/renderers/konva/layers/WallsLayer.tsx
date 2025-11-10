@@ -8,6 +8,8 @@ import * as vec from '../../../core/math/vec';
 function WallsLayerComponent() {
   const viewport = useStore((state) => state.viewport);
   const scene = useStore((state) => state.scene);
+  const selectedWallId = useStore((state) => state.selectedWallId);
+  const hoveredWallId = useStore((state) => state.hoveredWallId);
 
   const wallShapes = useMemo(() => {
     const shapes: Array<{
@@ -16,6 +18,8 @@ function WallsLayerComponent() {
       centerline: number[];
       nodeA: { x: number; y: number };
       nodeB: { x: number; y: number };
+      isSelected: boolean;
+      isHovered: boolean;
     }> = [];
 
     // Calculate node radius in screen pixels (world mm * scale)
@@ -36,27 +40,31 @@ function WallsLayerComponent() {
       const halfThickness = wall.thicknessMm / 2;
 
       // Offset edges in world space, then convert to screen
-      const aLeft = worldToScreen(vec.add(nodeA, vec.scale(perp, halfThickness)), viewport);
-      const aRight = worldToScreen(vec.sub(nodeA, vec.scale(perp, halfThickness)), viewport);
-      const bLeft = worldToScreen(vec.add(nodeB, vec.scale(perp, halfThickness)), viewport);
-      const bRight = worldToScreen(vec.sub(nodeB, vec.scale(perp, halfThickness)), viewport);
+      const startLeft = worldToScreen(vec.add(nodeA, vec.scale(perp, halfThickness)), viewport);
+      const startRight = worldToScreen(vec.sub(nodeA, vec.scale(perp, halfThickness)), viewport);
+      const endLeft = worldToScreen(vec.add(nodeB, vec.scale(perp, halfThickness)), viewport);
+      const endRight = worldToScreen(vec.sub(nodeB, vec.scale(perp, halfThickness)), viewport);
+
+      const polygon = [
+        startLeft.x, startLeft.y,
+        endLeft.x, endLeft.y,
+        endRight.x, endRight.y,
+        startRight.x, startRight.y,
+      ];
 
       shapes.push({
         key: wall.id,
-        polygon: [
-          aLeft.x, aLeft.y,
-          bLeft.x, bLeft.y,
-          bRight.x, bRight.y,
-          aRight.x, aRight.y,
-        ],
+        polygon,
         centerline: [a.x, a.y, b.x, b.y],
         nodeA: a,
         nodeB: b,
+        isSelected: wall.id === selectedWallId,
+        isHovered: wall.id === hoveredWallId,
       });
     }
 
     return { shapes, nodeRadiusPx };
-  }, [scene.nodes, scene.walls, viewport]);
+  }, [scene.nodes, scene.walls, viewport, selectedWallId, hoveredWallId]);
 
   return (
     <Layer listening={false}>
@@ -66,9 +74,9 @@ function WallsLayerComponent() {
           <Line
             points={shape.polygon}
             closed
-            fill="#cccccc"
-            stroke="#333333"
-            strokeWidth={1}
+            fill={shape.isSelected ? '#93c5fd' : shape.isHovered ? '#dbeafe' : '#cccccc'}
+            stroke={shape.isSelected ? '#2563eb' : shape.isHovered ? '#3b82f6' : '#333333'}
+            strokeWidth={shape.isSelected ? 2 : shape.isHovered ? 2 : 1}
             listening={false}
           />
           
@@ -86,14 +94,14 @@ function WallsLayerComponent() {
             x={shape.nodeA.x}
             y={shape.nodeA.y}
             radius={wallShapes.nodeRadiusPx}
-            fill="#3b82f6"
+            fill={shape.isSelected ? '#2563eb' : '#3b82f6'}
             listening={false}
           />
           <Circle
             x={shape.nodeB.x}
             y={shape.nodeB.y}
             radius={wallShapes.nodeRadiusPx}
-            fill="#3b82f6"
+            fill={shape.isSelected ? '#2563eb' : '#3b82f6'}
             listening={false}
           />
         </React.Fragment>

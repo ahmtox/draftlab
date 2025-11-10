@@ -8,10 +8,12 @@ import { useStore } from '../../state/store';
 import { MIN_ZOOM_SCALE, MAX_ZOOM_SCALE, MIN_WALL_LENGTH_MM } from '../../core/constants';
 import { screenToWorld } from './viewport';
 import { findSnapCandidate, type SnapCandidate } from '../../core/geometry/snapping';
+import { hitTestWalls } from '../../core/geometry/hit-testing';
 import * as vec from '../../core/math/vec';
 import type { Vec2 } from '../../core/math/vec';
 
 type WallToolState = 'idle' | 'first-point' | 'dragging';
+type SelectToolState = 'idle' | 'dragging-wall';
 
 export function Stage() {
   const viewport = useStore((state) => state.viewport);
@@ -20,6 +22,10 @@ export function Stage() {
   const wallParams = useStore((state) => state.wallParams);
   const scene = useStore((state) => state.scene);
   const setScene = useStore((state) => state.setScene);
+  const selectedWallId = useStore((state) => state.selectedWallId);
+  const setSelectedWallId = useStore((state) => state.setSelectedWallId);
+  const hoveredWallId = useStore((state) => state.hoveredWallId);
+  const setHoveredWallId = useStore((state) => state.setHoveredWallId);
   
   const rafIdRef = useRef<number | null>(null);
   const [dimensions, setDimensions] = useState({
@@ -31,8 +37,14 @@ export function Stage() {
   const [wallToolState, setWallToolState] = useState<WallToolState>('idle');
   const [firstPointMm, setFirstPointMm] = useState<Vec2 | null>(null);
   const [currentPointMm, setCurrentPointMm] = useState<Vec2 | null>(null);
-  const [hoverPointMm, setHoverPointMm] = useState<Vec2 | null>(null); // Hover indicator before first click
+  const [hoverPointMm, setHoverPointMm] = useState<Vec2 | null>(null);
   const [activeSnapCandidate, setActiveSnapCandidate] = useState<SnapCandidate | null>(null);
+
+  // Select tool state
+  const [selectToolState, setSelectToolState] = useState<SelectToolState>('idle');
+  const [dragStartMm, setDragStartMm] = useState<Vec2 | null>(null);
+  const [dragOffsetNodeA, setDragOffsetNodeA] = useState<Vec2 | null>(null);
+  const [dragOffsetNodeB, setDragOffsetNodeB] = useState<Vec2 | null>(null);
 
   useEffect(() => {
     const handleResize = () => {
@@ -53,7 +65,11 @@ export function Stage() {
     setCurrentPointMm(null);
     setHoverPointMm(null);
     setActiveSnapCandidate(null);
-  }, [activeTool]);
+    setSelectToolState('idle');
+    setDragStartMm(null);
+    setSelectedWallId(null);
+    setHoveredWallId(null);
+  }, [activeTool, setSelectedWallId, setHoveredWallId]);
 
   const handleWheel = useCallback((e: any) => {
     e.evt.preventDefault();
@@ -89,58 +105,50 @@ export function Stage() {
     });
   }, [viewport, setViewport]);
 
-  const handleMouseDown = useCallback((e: any) => {
-    if (activeTool !== 'wall') return;
-
+  // Wall Tool Handlers
+  const handleWallMouseDown = useCallback((e: any) => {
     const stage = e.target.getStage();
     const pointer = stage.getPointerPosition();
 
-    // Find snap candidate
     const snapResult = findSnapCandidate(pointer, scene, viewport, {
       snapToGrid: true,
       snapToNodes: true,
       snapToEdges: true,
     });
 
-    const worldPos = snapResult.point; // Use snapped point
+    const worldPos = snapResult.point;
 
     if (wallToolState === 'idle') {
       setFirstPointMm(worldPos);
       setCurrentPointMm(worldPos);
       setWallToolState('first-point');
       setActiveSnapCandidate(snapResult.candidate || null);
-      setHoverPointMm(null); // Clear hover indicator once placed
+      setHoverPointMm(null);
     } else if (wallToolState === 'first-point') {
-      // Validate wall length before creating
       const wallLength = vec.distance(firstPointMm!, worldPos);
       if (wallLength >= MIN_WALL_LENGTH_MM) {
         createWall(firstPointMm!, worldPos);
       }
-      // Reset state
       setWallToolState('idle');
       setFirstPointMm(null);
       setCurrentPointMm(null);
       setActiveSnapCandidate(null);
     }
-  }, [activeTool, wallToolState, firstPointMm, viewport, wallParams, scene]);
+  }, [wallToolState, firstPointMm, viewport, wallParams, scene]);
 
-  const handleMouseMove = useCallback((e: any) => {
-    if (activeTool !== 'wall') return;
-
+  const handleWallMouseMove = useCallback((e: any) => {
     const stage = e.target.getStage();
     const pointer = stage.getPointerPosition();
 
-    // Find snap candidate
     const snapResult = findSnapCandidate(pointer, scene, viewport, {
       snapToGrid: true,
       snapToNodes: true,
       snapToEdges: true,
     });
 
-    const worldPos = snapResult.point; // Use snapped point
+    const worldPos = snapResult.point;
 
     if (wallToolState === 'idle') {
-      // Show hover indicator before first click
       setHoverPointMm(worldPos);
       setActiveSnapCandidate(snapResult.candidate || null);
     } else if (wallToolState === 'first-point') {
@@ -154,34 +162,130 @@ export function Stage() {
       setCurrentPointMm(worldPos);
       setActiveSnapCandidate(snapResult.candidate || null);
     }
-  }, [activeTool, wallToolState, viewport, scene]);
+  }, [wallToolState, viewport, scene]);
 
-  const handleMouseUp = useCallback((e: any) => {
-    if (activeTool !== 'wall' || wallToolState !== 'dragging') return;
+  const handleWallMouseUp = useCallback((e: any) => {
+    if (wallToolState !== 'dragging') return;
 
     const stage = e.target.getStage();
     const pointer = stage.getPointerPosition();
 
-    // Find snap candidate for final point
     const snapResult = findSnapCandidate(pointer, scene, viewport, {
       snapToGrid: true,
       snapToNodes: true,
       snapToEdges: true,
     });
 
-    const worldPos = snapResult.point; // Use snapped point
+    const worldPos = snapResult.point;
 
-    // Validate wall length before creating
     const wallLength = vec.distance(firstPointMm!, worldPos);
     if (wallLength >= MIN_WALL_LENGTH_MM) {
       createWall(firstPointMm!, worldPos);
     }
-    // Reset state
     setWallToolState('idle');
     setFirstPointMm(null);
     setCurrentPointMm(null);
     setActiveSnapCandidate(null);
-  }, [activeTool, wallToolState, firstPointMm, viewport, wallParams, scene]);
+  }, [wallToolState, firstPointMm, viewport, wallParams, scene]);
+
+  // Select Tool Handlers
+  const handleSelectMouseDown = useCallback((e: any) => {
+    const stage = e.target.getStage();
+    const pointer = stage.getPointerPosition();
+    const worldPos = screenToWorld(pointer, viewport);
+
+    // Hit test with screen-space radius converted to mm
+    const hitRadiusMm = 20 / viewport.scale; // 20px hit radius
+    const hitWallId = hitTestWalls(worldPos, scene, hitRadiusMm);
+
+    if (hitWallId) {
+      setSelectedWallId(hitWallId);
+      
+      // Start drag
+      const wall = scene.walls.get(hitWallId);
+      if (wall) {
+        const nodeA = scene.nodes.get(wall.nodeAId);
+        const nodeB = scene.nodes.get(wall.nodeBId);
+        
+        if (nodeA && nodeB) {
+          setSelectToolState('dragging-wall');
+          setDragStartMm(worldPos);
+          setDragOffsetNodeA(vec.sub(nodeA, worldPos));
+          setDragOffsetNodeB(vec.sub(nodeB, worldPos));
+        }
+      }
+    } else {
+      setSelectedWallId(null);
+    }
+  }, [viewport, scene, setSelectedWallId]);
+
+  const handleSelectMouseMove = useCallback((e: any) => {
+    const stage = e.target.getStage();
+    const pointer = stage.getPointerPosition();
+    const worldPos = screenToWorld(pointer, viewport);
+
+    if (selectToolState === 'dragging-wall' && selectedWallId && dragStartMm) {
+      // Update wall position
+      const wall = scene.walls.get(selectedWallId);
+      if (wall && dragOffsetNodeA && dragOffsetNodeB) {
+        const newNodeAPos = vec.add(worldPos, dragOffsetNodeA);
+        const newNodeBPos = vec.add(worldPos, dragOffsetNodeB);
+
+        const newNodes = new Map(scene.nodes);
+        newNodes.set(wall.nodeAId, { 
+          ...scene.nodes.get(wall.nodeAId)!, 
+          x: newNodeAPos.x, 
+          y: newNodeAPos.y 
+        });
+        newNodes.set(wall.nodeBId, { 
+          ...scene.nodes.get(wall.nodeBId)!, 
+          x: newNodeBPos.x, 
+          y: newNodeBPos.y 
+        });
+
+        setScene({ nodes: newNodes, walls: scene.walls });
+      }
+    } else if (selectToolState === 'idle') {
+      // Update hover state
+      const hitRadiusMm = 20 / viewport.scale;
+      const hitWallId = hitTestWalls(worldPos, scene, hitRadiusMm);
+      setHoveredWallId(hitWallId);
+    }
+  }, [selectToolState, selectedWallId, dragStartMm, dragOffsetNodeA, dragOffsetNodeB, viewport, scene, setScene, setHoveredWallId]);
+
+  const handleSelectMouseUp = useCallback(() => {
+    if (selectToolState === 'dragging-wall') {
+      setSelectToolState('idle');
+      setDragStartMm(null);
+      setDragOffsetNodeA(null);
+      setDragOffsetNodeB(null);
+    }
+  }, [selectToolState]);
+
+  // Combined handlers
+  const handleMouseDown = useCallback((e: any) => {
+    if (activeTool === 'wall') {
+      handleWallMouseDown(e);
+    } else if (activeTool === 'select') {
+      handleSelectMouseDown(e);
+    }
+  }, [activeTool, handleWallMouseDown, handleSelectMouseDown]);
+
+  const handleMouseMove = useCallback((e: any) => {
+    if (activeTool === 'wall') {
+      handleWallMouseMove(e);
+    } else if (activeTool === 'select') {
+      handleSelectMouseMove(e);
+    }
+  }, [activeTool, handleWallMouseMove, handleSelectMouseMove]);
+
+  const handleMouseUp = useCallback((e: any) => {
+    if (activeTool === 'wall') {
+      handleWallMouseUp(e);
+    } else if (activeTool === 'select') {
+      handleSelectMouseUp();
+    }
+  }, [activeTool, handleWallMouseUp, handleSelectMouseUp]);
 
   const createWall = (startMm: Vec2, endMm: Vec2) => {
     const nodeAId = `node-${Date.now()}-a`;
@@ -206,13 +310,15 @@ export function Stage() {
     setScene({ nodes: newNodes, walls: newWalls });
   };
 
-  // Only show preview if wall length meets minimum
   const previewWall = (wallToolState === 'first-point' || wallToolState === 'dragging') && 
                       firstPointMm && 
                       currentPointMm &&
                       vec.distance(firstPointMm, currentPointMm) >= MIN_WALL_LENGTH_MM
     ? { startMm: firstPointMm, endMm: currentPointMm }
     : null;
+
+  const showWallPreview = activeTool === 'wall' && previewWall;
+  const showWallHover = activeTool === 'wall' && hoverPointMm && !previewWall;
 
   return (
     <KonvaStage
@@ -222,12 +328,13 @@ export function Stage() {
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      style={{ display: 'block', position: 'absolute', top: 0, left: 0 }}
+      style={{ display: 'block', position: 'absolute', top: 0, left: 0, cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
     >
       <GridLayer />
       <WallsLayer />
-      <PreviewLayer previewWall={previewWall} hoverPoint={hoverPointMm} />
-      <GuidesLayer snapCandidate={activeSnapCandidate} />
+      {showWallPreview && <PreviewLayer previewWall={previewWall} hoverPoint={null} />}
+      {showWallHover && <PreviewLayer previewWall={null} hoverPoint={hoverPointMm} />}
+      {activeTool === 'wall' && <GuidesLayer snapCandidate={activeSnapCandidate} />}
     </KonvaStage>
   );
 }
