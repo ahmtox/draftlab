@@ -1,7 +1,49 @@
 import type { Vec2 } from '../math/vec';
 import type { Scene } from '../domain/types';
 import * as vec from '../math/vec';
-import { DEFAULT_TOL } from '../constants';
+
+/**
+ * Hit test result for nodes on a wall
+ */
+export type NodeHitResult = 'node-a' | 'node-b' | 'wall' | null;
+
+/**
+ * Hit test a wall to determine if clicking node A, node B, or the wall body
+ */
+export function hitTestWallNode(
+  worldMm: Vec2,
+  wallId: string,
+  scene: Scene,
+  nodeRadiusMm: number
+): NodeHitResult {
+  const wall = scene.walls.get(wallId);
+  if (!wall) return null;
+
+  const nodeA = scene.nodes.get(wall.nodeAId);
+  const nodeB = scene.nodes.get(wall.nodeBId);
+
+  if (!nodeA || !nodeB) return null;
+
+  // Test node A first (higher priority)
+  const distToA = vec.distance(worldMm, nodeA);
+  if (distToA <= nodeRadiusMm) {
+    return 'node-a';
+  }
+
+  // Test node B
+  const distToB = vec.distance(worldMm, nodeB);
+  if (distToB <= nodeRadiusMm) {
+    return 'node-b';
+  }
+
+  // If not on a node, test wall body
+  const hitWall = hitTestWalls(worldMm, scene, nodeRadiusMm);
+  if (hitWall === wallId) {
+    return 'wall';
+  }
+
+  return null;
+}
 
 /**
  * Hit test a point against walls
@@ -68,4 +110,25 @@ export function hitTestNodes(
   }
 
   return closestNodeId;
+}
+
+/**
+ * Get all walls connected to a node (excluding a specific wall)
+ */
+export function getConnectedWalls(
+  nodeId: string,
+  excludeWallId: string | null,
+  scene: Scene
+): string[] {
+  const connected: string[] = [];
+
+  for (const wall of scene.walls.values()) {
+    if (wall.id === excludeWallId) continue;
+    
+    if (wall.nodeAId === nodeId || wall.nodeBId === nodeId) {
+      connected.push(wall.id);
+    }
+  }
+
+  return connected;
 }

@@ -1,3 +1,4 @@
+import React from 'react';
 import { Layer, Line, Circle, Text } from 'react-konva';
 import { memo } from 'react';
 import type { SnapCandidate } from '../../../core/geometry/snapping';
@@ -5,15 +6,16 @@ import { worldToScreen } from '../viewport';
 import { useStore } from '../../../state/store';
 
 interface GuidesLayerProps {
-  snapCandidate: SnapCandidate | null;
+  snapCandidates: (SnapCandidate | null)[];
 }
 
-function GuidesLayerComponent({ snapCandidate }: GuidesLayerProps) {
+function GuidesLayerComponent({ snapCandidates }: GuidesLayerProps) {
   const viewport = useStore((state) => state.viewport);
 
-  if (!snapCandidate) return <Layer listening={false} />;
+  // Filter out null candidates
+  const validCandidates = snapCandidates.filter((c): c is SnapCandidate => c !== null);
 
-  const snapPointScreen = worldToScreen(snapCandidate.point, viewport);
+  if (validCandidates.length === 0) return <Layer listening={false} />;
 
   // Choose color based on snap type
   const getSnapColor = (type: string): string => {
@@ -26,8 +28,6 @@ function GuidesLayerComponent({ snapCandidate }: GuidesLayerProps) {
     }
   };
 
-  const color = getSnapColor(snapCandidate.type);
-
   // Snap indicator circle
   const indicatorRadius = 8;
 
@@ -36,45 +36,54 @@ function GuidesLayerComponent({ snapCandidate }: GuidesLayerProps) {
 
   return (
     <Layer listening={false}>
-      {/* Crosshair */}
-      <Line
-        points={[
-          snapPointScreen.x - crosshairSize, snapPointScreen.y,
-          snapPointScreen.x + crosshairSize, snapPointScreen.y,
-        ]}
-        stroke={color}
-        strokeWidth={1.5}
-        listening={false}
-      />
-      <Line
-        points={[
-          snapPointScreen.x, snapPointScreen.y - crosshairSize,
-          snapPointScreen.x, snapPointScreen.y + crosshairSize,
-        ]}
-        stroke={color}
-        strokeWidth={1.5}
-        listening={false}
-      />
+      {validCandidates.map((snapCandidate, index) => {
+        const snapPointScreen = worldToScreen(snapCandidate.point, viewport);
+        const color = getSnapColor(snapCandidate.type);
 
-      {/* Snap indicator circle */}
-      <Circle
-        x={snapPointScreen.x}
-        y={snapPointScreen.y}
-        radius={indicatorRadius}
-        stroke={color}
-        strokeWidth={2}
-        listening={false}
-      />
+        return (
+          <React.Fragment key={`snap-${index}`}>
+            {/* Crosshair */}
+            <Line
+              points={[
+                snapPointScreen.x - crosshairSize, snapPointScreen.y,
+                snapPointScreen.x + crosshairSize, snapPointScreen.y,
+              ]}
+              stroke={color}
+              strokeWidth={1.5}
+              listening={false}
+            />
+            <Line
+              points={[
+                snapPointScreen.x, snapPointScreen.y - crosshairSize,
+                snapPointScreen.x, snapPointScreen.y + crosshairSize,
+              ]}
+              stroke={color}
+              strokeWidth={1.5}
+              listening={false}
+            />
 
-      {/* Label */}
-      <Text
-        x={snapPointScreen.x + 12}
-        y={snapPointScreen.y - 8}
-        text={snapCandidate.type}
-        fontSize={11}
-        fill={color}
-        listening={false}
-      />
+            {/* Snap indicator circle */}
+            <Circle
+              x={snapPointScreen.x}
+              y={snapPointScreen.y}
+              radius={indicatorRadius}
+              stroke={color}
+              strokeWidth={2}
+              listening={false}
+            />
+
+            {/* Label */}
+            <Text
+              x={snapPointScreen.x + 12}
+              y={snapPointScreen.y - 8}
+              text={snapCandidate.type}
+              fontSize={11}
+              fill={color}
+              listening={false}
+            />
+          </React.Fragment>
+        );
+      })}
     </Layer>
   );
 }

@@ -5,15 +5,16 @@ import { WallsLayer } from './layers/WallsLayer';
 import { PreviewLayer } from './layers/PreviewLayer';
 import { GuidesLayer } from './layers/GuidesLayer';
 import { useStore } from '../../state/store';
-import { MIN_ZOOM_SCALE, MAX_ZOOM_SCALE, MIN_WALL_LENGTH_MM } from '../../core/constants';
-import { screenToWorld } from './viewport';
+import { MIN_ZOOM_SCALE, MAX_ZOOM_SCALE, MIN_WALL_LENGTH_MM, NODE_RADIUS_MM } from '../../core/constants';
+import { screenToWorld, worldToScreen } from './viewport';
 import { findSnapCandidate, type SnapCandidate } from '../../core/geometry/snapping';
-import { hitTestWalls } from '../../core/geometry/hit-testing';
+import { hitTestWalls, hitTestWallNode, getConnectedWalls } from '../../core/geometry/hit-testing';
+import { findNodeAtPosition, mergeNodes } from '../../core/geometry/node-merging';
 import * as vec from '../../core/math/vec';
 import type { Vec2 } from '../../core/math/vec';
 
 type WallToolState = 'idle' | 'first-point' | 'dragging';
-type SelectToolState = 'idle' | 'dragging-wall';
+type SelectToolState = 'idle' | 'dragging';
 
 export function Stage() {
   const viewport = useStore((state) => state.viewport);
@@ -26,11 +27,17 @@ export function Stage() {
   const setSelectedWallId = useStore((state) => state.setSelectedWallId);
   const hoveredWallId = useStore((state) => state.hoveredWallId);
   const setHoveredWallId = useStore((state) => state.setHoveredWallId);
+  const dragState = useStore((state) => state.dragState);
+  const setDragState = useStore((state) => state.setDragState);
+  const snapCandidateA = useStore((state) => state.snapCandidateA);
+  const snapCandidateB = useStore((state) => state.snapCandidateB);
+  const setSnapCandidateA = useStore((state) => state.setSnapCandidateA);
+  const setSnapCandidateB = useStore((state) => state.setSnapCandidateB);
   
   const rafIdRef = useRef<number | null>(null);
   const [dimensions, setDimensions] = useState({
     width: window.innerWidth,
-    height: window.innerHeight - 48, // header height
+    height: window.innerHeight - 48,
   });
 
   // Wall tool state
@@ -42,9 +49,6 @@ export function Stage() {
 
   // Select tool state
   const [selectToolState, setSelectToolState] = useState<SelectToolState>('idle');
-  const [dragStartMm, setDragStartMm] = useState<Vec2 | null>(null);
-  const [dragOffsetNodeA, setDragOffsetNodeA] = useState<Vec2 | null>(null);
-  const [dragOffsetNodeB, setDragOffsetNodeB] = useState<Vec2 | null>(null);
 
   useEffect(() => {
     const handleResize = () => {
@@ -66,10 +70,18 @@ export function Stage() {
     setHoverPointMm(null);
     setActiveSnapCandidate(null);
     setSelectToolState('idle');
-    setDragStartMm(null);
+    setDragState({
+      mode: null,
+      startWorldMm: null,
+      offsetAMm: null,
+      offsetBMm: null,
+      originalSceneSnapshot: null,
+    });
     setSelectedWallId(null);
     setHoveredWallId(null);
-  }, [activeTool, setSelectedWallId, setHoveredWallId]);
+    setSnapCandidateA(null);
+    setSnapCandidateB(null);
+  }, [activeTool, setSelectedWallId, setHoveredWallId, setDragState, setSnapCandidateA, setSnapCandidateB]);
 
   const handleWheel = useCallback((e: any) => {
     e.evt.preventDefault();
@@ -134,7 +146,7 @@ export function Stage() {
       setCurrentPointMm(null);
       setActiveSnapCandidate(null);
     }
-  }, [wallToolState, firstPointMm, viewport, wallParams, scene]);
+  }, [wallToolState, firstPointMm, viewport, scene]);
 
   const handleWallMouseMove = useCallback((e: any) => {
     const stage = e.target.getStage();
@@ -186,7 +198,7 @@ export function Stage() {
     setFirstPointMm(null);
     setCurrentPointMm(null);
     setActiveSnapCandidate(null);
-  }, [wallToolState, firstPointMm, viewport, wallParams, scene]);
+  }, [wallToolState, firstPointMm, viewport, scene]);
 
   // Select Tool Handlers
   const handleSelectMouseDown = useCallback((e: any) => {
@@ -194,73 +206,294 @@ export function Stage() {
     const pointer = stage.getPointerPosition();
     const worldPos = screenToWorld(pointer, viewport);
 
-    // Hit test with screen-space radius converted to mm
-    const hitRadiusMm = 20 / viewport.scale; // 20px hit radius
+    const nodeRadiusMm = NODE_RADIUS_MM;
+    const hitRadiusMm = 20 / viewport.scale;
+
+    // Hit test selected wall's nodes first
+    if (selectedWallId) {
+      const hitResult = hitTestWallNode(worldPos, selectedWallId, scene, nodeRadiusMm);
+      
+      if (hitResult === 'node-a') {
+        const wall = scene.walls.get(selectedWallId)!;
+        const nodeA = scene.nodes.get(wall.nodeAId)!;
+        
+        setSelectToolState('dragging');
+        setDragState({
+          mode: 'node-a',
+          startWorldMm: worldPos,
+          offsetAMm: vec.sub(nodeA, worldPos),
+          offsetBMm: null,
+          originalSceneSnapshot: { nodes: new Map(scene.nodes), walls: new Map(scene.walls) },
+        });
+        return;
+      } else if (hitResult === 'node-b') {
+        const wall = scene.walls.get(selectedWallId)!;
+        const nodeB = scene.nodes.get(wall.nodeBId)!;
+        
+        setSelectToolState('dragging');
+        setDragState({
+          mode: 'node-b',
+          startWorldMm: worldPos,
+          offsetAMm: null,
+          offsetBMm: vec.sub(nodeB, worldPos),
+          originalSceneSnapshot: { nodes: new Map(scene.nodes), walls: new Map(scene.walls) },
+        });
+        return;
+      } else if (hitResult === 'wall') {
+        const wall = scene.walls.get(selectedWallId)!;
+        const nodeA = scene.nodes.get(wall.nodeAId)!;
+        const nodeB = scene.nodes.get(wall.nodeBId)!;
+        
+        setSelectToolState('dragging');
+        setDragState({
+          mode: 'wall',
+          startWorldMm: worldPos,
+          offsetAMm: vec.sub(nodeA, worldPos),
+          offsetBMm: vec.sub(nodeB, worldPos),
+          originalSceneSnapshot: { nodes: new Map(scene.nodes), walls: new Map(scene.walls) },
+        });
+        return;
+      }
+    }
+
+    // Hit test any wall
     const hitWallId = hitTestWalls(worldPos, scene, hitRadiusMm);
 
     if (hitWallId) {
       setSelectedWallId(hitWallId);
       
-      // Start drag
-      const wall = scene.walls.get(hitWallId);
-      if (wall) {
-        const nodeA = scene.nodes.get(wall.nodeAId);
-        const nodeB = scene.nodes.get(wall.nodeBId);
-        
-        if (nodeA && nodeB) {
-          setSelectToolState('dragging-wall');
-          setDragStartMm(worldPos);
-          setDragOffsetNodeA(vec.sub(nodeA, worldPos));
-          setDragOffsetNodeB(vec.sub(nodeB, worldPos));
-        }
-      }
+      const wall = scene.walls.get(hitWallId)!;
+      const nodeA = scene.nodes.get(wall.nodeAId)!;
+      const nodeB = scene.nodes.get(wall.nodeBId)!;
+      
+      setSelectToolState('dragging');
+      setDragState({
+        mode: 'wall',
+        startWorldMm: worldPos,
+        offsetAMm: vec.sub(nodeA, worldPos),
+        offsetBMm: vec.sub(nodeB, worldPos),
+        originalSceneSnapshot: { nodes: new Map(scene.nodes), walls: new Map(scene.walls) },
+      });
     } else {
       setSelectedWallId(null);
+      setDragState({
+        mode: null,
+        startWorldMm: null,
+        offsetAMm: null,
+        offsetBMm: null,
+        originalSceneSnapshot: null,
+      });
     }
-  }, [viewport, scene, setSelectedWallId]);
+  }, [viewport, scene, selectedWallId, setSelectedWallId, setDragState]);
 
   const handleSelectMouseMove = useCallback((e: any) => {
     const stage = e.target.getStage();
     const pointer = stage.getPointerPosition();
     const worldPos = screenToWorld(pointer, viewport);
 
-    if (selectToolState === 'dragging-wall' && selectedWallId && dragStartMm) {
-      // Update wall position
+    if (selectToolState === 'dragging' && selectedWallId && dragState.mode && dragState.originalSceneSnapshot) {
       const wall = scene.walls.get(selectedWallId);
-      if (wall && dragOffsetNodeA && dragOffsetNodeB) {
-        const newNodeAPos = vec.add(worldPos, dragOffsetNodeA);
-        const newNodeBPos = vec.add(worldPos, dragOffsetNodeB);
+      if (!wall) return;
 
-        const newNodes = new Map(scene.nodes);
-        newNodes.set(wall.nodeAId, { 
-          ...scene.nodes.get(wall.nodeAId)!, 
-          x: newNodeAPos.x, 
-          y: newNodeAPos.y 
-        });
-        newNodes.set(wall.nodeBId, { 
-          ...scene.nodes.get(wall.nodeBId)!, 
-          x: newNodeBPos.x, 
-          y: newNodeBPos.y 
-        });
+      const originalNodeA = dragState.originalSceneSnapshot.nodes.get(wall.nodeAId);
+      const originalNodeB = dragState.originalSceneSnapshot.nodes.get(wall.nodeBId);
+      if (!originalNodeA || !originalNodeB) return;
 
-        setScene({ nodes: newNodes, walls: scene.walls });
+      // Check for snapping and merging
+      const connectedToA = getConnectedWalls(wall.nodeAId, selectedWallId, scene);
+      const connectedToB = getConnectedWalls(wall.nodeBId, selectedWallId, scene);
+
+      const canSnapA = dragState.mode === 'node-a' || (dragState.mode === 'wall' && connectedToA.length === 0);
+      const canSnapB = dragState.mode === 'node-b' || (dragState.mode === 'wall' && connectedToB.length === 0);
+
+      let finalNodeAPos = originalNodeA;
+      let finalNodeBPos = originalNodeB;
+      let snapA: SnapCandidate | null = null;
+      let snapB: SnapCandidate | null = null;
+
+      // Build snap scene (exclude selected wall from snapping targets)
+      const snapScene = {
+        nodes: new Map(dragState.originalSceneSnapshot.nodes),
+        walls: new Map(dragState.originalSceneSnapshot.walls),
+      };
+      snapScene.walls.delete(selectedWallId);
+
+      if (dragState.mode === 'wall') {
+        // Dragging entire wall - both nodes move together
+        const delta = vec.sub(worldPos, dragState.startWorldMm!);
+        const newNodeAPos = vec.add(originalNodeA, delta);
+        const newNodeBPos = vec.add(originalNodeB, delta);
+
+        // Try to snap node A if allowed
+        if (canSnapA) {
+          const nodeAScreenPos = worldToScreen(newNodeAPos, viewport);
+          const snapResultA = findSnapCandidate(
+            nodeAScreenPos,
+            snapScene,
+            viewport,
+            {
+              snapToGrid: true,
+              snapToNodes: true,
+              snapToEdges: true,
+              excludeNodeIds: new Set([wall.nodeAId, wall.nodeBId]),
+            }
+          );
+
+          if (snapResultA.snapped) {
+            // If node A snaps, move node B by the same delta to preserve wall length/angle
+            const snapDelta = vec.sub(snapResultA.point, originalNodeA);
+            finalNodeAPos = snapResultA.point;
+            finalNodeBPos = vec.add(originalNodeB, snapDelta);
+            snapA = snapResultA.candidate || null;
+          } else {
+            finalNodeAPos = newNodeAPos;
+            finalNodeBPos = newNodeBPos;
+          }
+        } else {
+          finalNodeAPos = newNodeAPos;
+          finalNodeBPos = newNodeBPos;
+        }
+
+        // Try to snap node B if allowed (independent of node A)
+        if (canSnapB) {
+          const nodeBScreenPos = worldToScreen(finalNodeBPos, viewport);
+          const snapResultB = findSnapCandidate(
+            nodeBScreenPos,
+            snapScene,
+            viewport,
+            {
+              snapToGrid: true,
+              snapToNodes: true,
+              snapToEdges: true,
+              excludeNodeIds: new Set([wall.nodeAId, wall.nodeBId]),
+            }
+          );
+
+          if (snapResultB.snapped) {
+            // If node B also snaps, we need to decide whether to honor both snaps
+            // For now, only apply node B snap if node A didn't snap
+            if (!snapA) {
+              const snapDelta = vec.sub(snapResultB.point, originalNodeB);
+              finalNodeBPos = snapResultB.point;
+              finalNodeAPos = vec.add(originalNodeA, snapDelta);
+              snapB = snapResultB.candidate || null;
+            } else {
+              // Node A already snapped, just show guide for node B potential snap
+              snapB = snapResultB.candidate || null;
+            }
+          }
+        }
+      } else if (dragState.mode === 'node-a') {
+        // Dragging node A only
+        const newNodeAPos = vec.add(worldPos, dragState.offsetAMm!);
+        finalNodeBPos = originalNodeB; // Keep node B at original position
+
+        if (canSnapA) {
+          const snapResultA = findSnapCandidate(
+            pointer,
+            snapScene,
+            viewport,
+            {
+              snapToGrid: true,
+              snapToNodes: true,
+              snapToEdges: true,
+              excludeNodeIds: new Set([wall.nodeAId, wall.nodeBId]),
+            }
+          );
+
+          if (snapResultA.snapped) {
+            finalNodeAPos = snapResultA.point;
+            snapA = snapResultA.candidate || null;
+          } else {
+            finalNodeAPos = newNodeAPos;
+          }
+        } else {
+          finalNodeAPos = newNodeAPos;
+        }
+      } else if (dragState.mode === 'node-b') {
+        // Dragging node B only
+        const newNodeBPos = vec.add(worldPos, dragState.offsetBMm!);
+        finalNodeAPos = originalNodeA; // Keep node A at original position
+
+        if (canSnapB) {
+          const snapResultB = findSnapCandidate(
+            pointer,
+            snapScene,
+            viewport,
+            {
+              snapToGrid: true,
+              snapToNodes: true,
+              snapToEdges: true,
+              excludeNodeIds: new Set([wall.nodeAId, wall.nodeBId]),
+            }
+          );
+
+          if (snapResultB.snapped) {
+            finalNodeBPos = snapResultB.point;
+            snapB = snapResultB.candidate || null;
+          } else {
+            finalNodeBPos = newNodeBPos;
+          }
+        } else {
+          finalNodeBPos = newNodeBPos;
+        }
       }
+
+      // Update scene with new positions
+      const newNodes = new Map(scene.nodes);
+      newNodes.set(wall.nodeAId, { ...originalNodeA, x: finalNodeAPos.x, y: finalNodeAPos.y });
+      newNodes.set(wall.nodeBId, { ...originalNodeB, x: finalNodeBPos.x, y: finalNodeBPos.y });
+
+      setScene({ nodes: newNodes, walls: scene.walls });
+      setSnapCandidateA(snapA);
+      setSnapCandidateB(snapB);
     } else if (selectToolState === 'idle') {
       // Update hover state
       const hitRadiusMm = 20 / viewport.scale;
       const hitWallId = hitTestWalls(worldPos, scene, hitRadiusMm);
       setHoveredWallId(hitWallId);
     }
-  }, [selectToolState, selectedWallId, dragStartMm, dragOffsetNodeA, dragOffsetNodeB, viewport, scene, setScene, setHoveredWallId]);
+  }, [selectToolState, selectedWallId, dragState, viewport, scene, setScene, setHoveredWallId, setSnapCandidateA, setSnapCandidateB]);
 
   const handleSelectMouseUp = useCallback(() => {
-    if (selectToolState === 'dragging-wall') {
+    if (selectToolState === 'dragging' && selectedWallId && dragState.originalSceneSnapshot) {
+      const wall = scene.walls.get(selectedWallId);
+      if (!wall) return;
+
+      let finalScene = scene;
+
+      // Check if node A should merge with another node
+      const nodeA = scene.nodes.get(wall.nodeAId);
+      if (nodeA && snapCandidateA?.type === 'node' && snapCandidateA.entityId) {
+        const targetNodeId = snapCandidateA.entityId;
+        if (targetNodeId !== wall.nodeAId && targetNodeId !== wall.nodeBId) {
+          finalScene = mergeNodes(wall.nodeAId, targetNodeId, finalScene);
+        }
+      }
+
+      // Check if node B should merge with another node
+      const nodeB = finalScene.nodes.get(wall.nodeBId);
+      if (nodeB && snapCandidateB?.type === 'node' && snapCandidateB.entityId) {
+        const targetNodeId = snapCandidateB.entityId;
+        const currentNodeBId = finalScene.walls.get(selectedWallId)?.nodeBId;
+        if (currentNodeBId && targetNodeId !== currentNodeBId && targetNodeId !== finalScene.walls.get(selectedWallId)?.nodeAId) {
+          finalScene = mergeNodes(currentNodeBId, targetNodeId, finalScene);
+        }
+      }
+
+      setScene(finalScene);
       setSelectToolState('idle');
-      setDragStartMm(null);
-      setDragOffsetNodeA(null);
-      setDragOffsetNodeB(null);
+      setDragState({
+        mode: null,
+        startWorldMm: null,
+        offsetAMm: null,
+        offsetBMm: null,
+        originalSceneSnapshot: null,
+      });
+      setSnapCandidateA(null);
+      setSnapCandidateB(null);
     }
-  }, [selectToolState]);
+  }, [selectToolState, selectedWallId, dragState, scene, snapCandidateA, snapCandidateB, setScene, setDragState, setSnapCandidateA, setSnapCandidateB]);
 
   // Combined handlers
   const handleMouseDown = useCallback((e: any) => {
@@ -319,6 +552,10 @@ export function Stage() {
 
   const showWallPreview = activeTool === 'wall' && previewWall;
   const showWallHover = activeTool === 'wall' && hoverPointMm && !previewWall;
+  const showSelectGuides = activeTool === 'select' && selectToolState === 'dragging';
+
+  // Collect all snap candidates for guides layer
+  const selectGuideCandidates = showSelectGuides ? [snapCandidateA, snapCandidateB] : [];
 
   return (
     <KonvaStage
@@ -334,7 +571,8 @@ export function Stage() {
       <WallsLayer />
       {showWallPreview && <PreviewLayer previewWall={previewWall} hoverPoint={null} />}
       {showWallHover && <PreviewLayer previewWall={null} hoverPoint={hoverPointMm} />}
-      {activeTool === 'wall' && <GuidesLayer snapCandidate={activeSnapCandidate} />}
+      {activeTool === 'wall' && <GuidesLayer snapCandidates={[activeSnapCandidate]} />}
+      {showSelectGuides && <GuidesLayer snapCandidates={selectGuideCandidates} />}
     </KonvaStage>
   );
 }
