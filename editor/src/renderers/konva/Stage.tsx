@@ -12,6 +12,7 @@ import { SelectTool } from '../../tools/select.tool';
 import { AddWallCommand } from '../../core/commands/add-wall';
 import { MoveNodeCommand } from '../../core/commands/move-node';
 import { MergeNodesCommand } from '../../core/commands/merge-nodes';
+import { DeleteWallsCommand } from '../../core/commands/delete-walls';
 import type { Vec2 } from '../../core/math/vec';
 
 export function Stage() {
@@ -21,6 +22,7 @@ export function Stage() {
   const scene = useStore((state) => state.scene);
   const setScene = useStore((state) => state.setScene);
   const history = useStore((state) => state.history);
+  const selectedWallIds = useStore((state) => state.selectedWallIds);
   const setSelectedWallIds = useStore((state) => state.setSelectedWallIds);
   
   const rafIdRef = useRef<number | null>(null);
@@ -146,8 +148,21 @@ export function Stage() {
       // Delete/Backspace: Delete selected walls
       else if ((e.key === 'Delete' || e.key === 'Backspace') && activeTool === 'select') {
         e.preventDefault();
-        // TODO: Implement DeleteWallCommand
-        console.log('Delete selected walls:', useStore.getState().selectedWallIds);
+        
+        const currentSelectedWallIds = useStore.getState().selectedWallIds;
+        
+        if (currentSelectedWallIds.size > 0) {
+          const cmd = new DeleteWallsCommand(
+            currentSelectedWallIds,
+            () => useStore.getState().scene,
+            setScene
+          );
+          
+          history.push(cmd);
+          
+          // Clear selection after delete
+          setSelectedWallIds(new Set());
+        }
       }
       // Escape: Clear selection
       else if (e.key === 'Escape' && activeTool === 'select') {
@@ -158,27 +173,27 @@ export function Stage() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeTool, setSelectedWallIds]);
+  }, [activeTool, history, setScene, setSelectedWallIds]);
 
   const handleWheel = useCallback((e: any) => {
     e.evt.preventDefault();
 
-    if (rafIdRef.current !== null) {
-      cancelAnimationFrame(rafIdRef.current);
-    }
+    if (rafIdRef.current !== null) return;
 
     rafIdRef.current = requestAnimationFrame(() => {
-      const scaleBy = 1.1;
       const stage = e.target.getStage();
-      const oldScale = viewport.scale;
       const pointer = stage.getPointerPosition();
 
-      const newScale = e.evt.deltaY < 0 ? oldScale * scaleBy : oldScale / scaleBy;
+      const delta = e.evt.deltaY;
+      const scaleBy = 1.1;
+      const oldScale = viewport.scale;
+      const newScale = delta > 0 ? oldScale / scaleBy : oldScale * scaleBy;
+
       const clampedScale = Math.max(MIN_ZOOM_SCALE, Math.min(MAX_ZOOM_SCALE, newScale));
 
       const mousePointTo = {
         x: (pointer.x - viewport.centerX) / oldScale,
-        y: (viewport.centerY - pointer.y) / oldScale,
+        y: -(pointer.y - viewport.centerY) / oldScale,
       };
 
       const newCenterX = pointer.x - mousePointTo.x * clampedScale;
@@ -230,6 +245,7 @@ export function Stage() {
     }
   }, [activeTool, scene, viewport]);
 
+  // Determine what preview to show
   const showWallPreview = activeTool === 'wall' && wallToolContext?.state !== 'idle' && wallToolContext?.firstPointMm && wallToolContext?.currentPointMm;
   const showWallHover = activeTool === 'wall' && wallToolContext?.state === 'idle' && wallToolContext?.hoverPointMm;
 
@@ -267,29 +283,30 @@ export function Stage() {
       
       {/* Preview layers */}
       {showWallPreview && (
-        <PreviewLayer 
-          previewWall={{ 
-            startMm: wallToolContext.firstPointMm, 
-            endMm: wallToolContext.currentPointMm 
-          }} 
-          hoverPoint={null} 
+        <PreviewLayer
+          previewWall={{
+            startMm: wallToolContext.firstPointMm,
+            endMm: wallToolContext.currentPointMm,
+          }}
+          hoverPoint={null}
         />
       )}
+
       {showWallHover && (
-        <PreviewLayer 
-          previewWall={null} 
-          hoverPoint={wallToolContext.hoverPointMm} 
+        <PreviewLayer
+          previewWall={null}
+          hoverPoint={wallToolContext.hoverPointMm}
         />
       )}
-      
-      {/* Guides - show for both wall and select tools */}
+
+      {/* Guides layer with snap candidates */}
       <GuidesLayer snapCandidates={allSnapCandidates} />
-      
-      {/* Marquee on TOP (last = highest z-index in Konva) */}
-      {activeTool === 'select' && selectToolContext?.state === 'marquee' && (
-        <MarqueeLayer 
-          marqueeStart={selectToolContext.marqueeStart} 
-          marqueeCurrent={selectToolContext.marqueeCurrent} 
+
+      {/* Marquee selection */}
+      {selectToolContext?.state === 'marquee' && (
+        <MarqueeLayer
+          marqueeStart={selectToolContext.marqueeStart}
+          marqueeCurrent={selectToolContext.marqueeCurrent}
         />
       )}
     </KonvaStage>
