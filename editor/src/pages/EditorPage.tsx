@@ -26,6 +26,7 @@ export function EditorPage() {
 
   const saveTimeoutRef = useRef<number | null>(null);
   const isSavingRef = useRef(false);
+  const unmountSaveRef = useRef(false); // Track if we've saved on unmount
 
   // Save function
   const saveScene = useCallback(async () => {
@@ -54,8 +55,6 @@ export function EditorPage() {
       setLoading(true);
       setError(null);
 
-      console.log(`Loading project ${projectId}...`);
-
       const [project, loadedScene] = await Promise.all([
         fileStorage.getProject(projectId),
         fileStorage.loadScene(projectId),
@@ -66,15 +65,12 @@ export function EditorPage() {
         return;
       }
 
-      console.log(`Project ${projectId} loaded:`, project);
       setCurrentProject(project);
 
       // Always set scene - either loaded or empty
       if (loadedScene) {
-        console.log(`Setting loaded scene with ${loadedScene.nodes.size} nodes, ${loadedScene.walls.size} walls`);
         setScene(loadedScene);
       } else {
-        console.log('No saved scene found, setting empty scene');
         setScene({ nodes: new Map(), walls: new Map() });
       }
 
@@ -103,8 +99,8 @@ export function EditorPage() {
 
     // Only reset and reload if projectId actually changed
     if (lastProjectIdRef.current !== projectId) {
-      console.log(`Project ID changed from ${lastProjectIdRef.current} to ${projectId}`);
       lastProjectIdRef.current = projectId;
+      unmountSaveRef.current = false; // Reset unmount save flag
       
       // Reset state before loading new project
       resetProject();
@@ -133,17 +129,12 @@ export function EditorPage() {
     };
   }, [scene, projectId, currentProject, saveScene]);
 
-  // Save on unmount (navigation away)
+  // Save on unmount (navigation away) - only once
   useEffect(() => {
     return () => {
-      // Clear any pending auto-save
-      if (saveTimeoutRef.current !== null) {
-        clearTimeout(saveTimeoutRef.current);
-      }
-      
-      // Force immediate save on unmount
-      if (projectId && currentProject && scene) {
-        console.log(`Unmounting editor, saving project ${projectId}`);
+      // Only save if we haven't already
+      if (!unmountSaveRef.current && projectId && currentProject && scene) {
+        unmountSaveRef.current = true;
         fileStorage.saveScene(projectId, scene).catch((err) => {
           console.error('Failed to save on navigation:', err);
         });
@@ -151,11 +142,12 @@ export function EditorPage() {
     };
   }, [projectId, currentProject, scene]);
 
-  // Handle browser close/refresh
+  // Handle browser close/refresh - only once
   useEffect(() => {
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (projectId && currentProject && scene) {
-        console.log(`Browser closing, saving project ${projectId}`);
+    const handleBeforeUnload = () => {
+      if (!unmountSaveRef.current && projectId && currentProject && scene) {
+        unmountSaveRef.current = true;
+        // Note: This is best-effort, browser may not wait for async operation
         fileStorage.saveScene(projectId, scene).catch((err) => {
           console.error('Failed to save on unload:', err);
         });

@@ -59,10 +59,6 @@ class FileStorage {
         resolve();
       };
       request.onerror = () => reject(request.error);
-      request.onblocked = () => {
-        console.warn('Database deletion blocked - close all tabs');
-        reject(new Error('Database deletion blocked'));
-      };
     });
   }
 
@@ -85,7 +81,6 @@ class FileStorage {
     await this.saveProjectMeta(project);
     await this.saveScene(project.id, emptyScene);
 
-    console.log(`Created project ${project.id} with empty scene`);
     return project;
   }
 
@@ -96,12 +91,12 @@ class FileStorage {
       const transaction = this.db!.transaction(PROJECTS_STORE, 'readonly');
       const store = transaction.objectStore(PROJECTS_STORE);
       const index = store.index('updatedAt');
-      const request = index.openCursor(null, 'prev');
+      const request = index.openCursor(null, 'prev'); // Sort by most recent
 
       const projects: ProjectMeta[] = [];
 
-      request.onsuccess = () => {
-        const cursor = request.result;
+      request.onsuccess = (event) => {
+        const cursor = (event.target as IDBRequest).result;
         if (cursor) {
           projects.push(cursor.value);
           cursor.continue();
@@ -137,11 +132,6 @@ class FileStorage {
       walls: Array.from(scene.walls.entries()),
     };
 
-    console.log(`Saving scene for project ${projectId}:`, {
-      nodeCount: scene.nodes.size,
-      wallCount: scene.walls.size,
-    });
-
     return new Promise((resolve, reject) => {
       const transaction = this.db!.transaction([SCENES_STORE, PROJECTS_STORE], 'readwrite');
       
@@ -161,10 +151,7 @@ class FileStorage {
         }
       };
 
-      transaction.oncomplete = () => {
-        console.log(`Scene saved for project ${projectId}`);
-        resolve();
-      };
+      transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error);
     });
   }
@@ -180,7 +167,6 @@ class FileStorage {
       request.onsuccess = () => {
         const result = request.result;
         if (!result) {
-          console.log(`No scene found for project ${projectId}`);
           resolve(null);
           return;
         }
@@ -190,11 +176,6 @@ class FileStorage {
           nodes: new Map(result.nodes),
           walls: new Map(result.walls),
         };
-
-        console.log(`Loaded scene for project ${projectId}:`, {
-          nodeCount: scene.nodes.size,
-          wallCount: scene.walls.size,
-        });
 
         resolve(scene);
       };
@@ -215,14 +196,8 @@ class FileStorage {
       projectStore.delete(id);
       sceneStore.delete(id);
 
-      transaction.oncomplete = () => {
-        console.log(`Project ${id} deleted from both stores`);
-        resolve();
-      };
-      transaction.onerror = () => {
-        console.error(`Failed to delete project ${id}:`, transaction.error);
-        reject(transaction.error);
-      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
     });
   }
 
