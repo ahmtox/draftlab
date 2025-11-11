@@ -170,6 +170,74 @@ export class SelectTool {
     this.onStateChange(this.context);
   }
 
+  /**
+   * Get all nodes that should be excluded from snapping during drag.
+   * This includes:
+   * 1. All nodes from selected walls
+   * 2. All nodes from walls that share ANY node with selected walls (connected walls)
+   */
+  private getExcludedNodeIds(scene: Scene): Set<string> {
+    const excludedNodes = new Set<string>();
+    const selectedNodeIds = new Set<string>();
+
+    // First pass: collect all nodes from selected walls
+    for (const wallId of this.context.selectedWallIds) {
+      const wall = scene.walls.get(wallId);
+      if (wall) {
+        selectedNodeIds.add(wall.nodeAId);
+        selectedNodeIds.add(wall.nodeBId);
+        excludedNodes.add(wall.nodeAId);
+        excludedNodes.add(wall.nodeBId);
+      }
+    }
+
+    // Second pass: find all walls that share nodes with selected walls
+    // and exclude their nodes too
+    for (const wall of scene.walls.values()) {
+      // Skip if this wall is already selected
+      if (this.context.selectedWallIds.has(wall.id)) continue;
+
+      // If this wall shares ANY node with selected walls, exclude both its nodes
+      if (selectedNodeIds.has(wall.nodeAId) || selectedNodeIds.has(wall.nodeBId)) {
+        excludedNodes.add(wall.nodeAId);
+        excludedNodes.add(wall.nodeBId);
+      }
+    }
+
+    return excludedNodes;
+  }
+
+  /**
+   * Get all walls that should be excluded from edge/midpoint snapping during drag.
+   * This includes:
+   * 1. All selected walls
+   * 2. All walls that share ANY node with selected walls (connected walls)
+   */
+  private getExcludedWallIds(scene: Scene): Set<string> {
+    const excludedWalls = new Set<string>(this.context.selectedWallIds);
+    const selectedNodeIds = new Set<string>();
+
+    // Collect all nodes from selected walls
+    for (const wallId of this.context.selectedWallIds) {
+      const wall = scene.walls.get(wallId);
+      if (wall) {
+        selectedNodeIds.add(wall.nodeAId);
+        selectedNodeIds.add(wall.nodeBId);
+      }
+    }
+
+    // Find all walls that share nodes with selected walls and exclude them
+    for (const wall of scene.walls.values()) {
+      if (excludedWalls.has(wall.id)) continue;
+
+      if (selectedNodeIds.has(wall.nodeAId) || selectedNodeIds.has(wall.nodeBId)) {
+        excludedWalls.add(wall.id);
+      }
+    }
+
+    return excludedWalls;
+  }
+
   handlePointerMove(screenPx: Vec2, scene: Scene, viewport: Viewport): void {
     const worldPos = screenToWorld(screenPx, viewport);
 
@@ -202,25 +270,35 @@ export class SelectTool {
       const activeSnaps = new Map<string, string>();
       const snapCandidates: SnapCandidate[] = [];
 
-      // Get set of all selected node IDs (to exclude from snapping)
-      const selectedNodeIds = new Set(this.originalNodePositions.keys());
+      // Get ALL nodes to exclude (selected walls + connected walls)
+      const excludedNodeIds = this.getExcludedNodeIds(scene);
+      // Get ALL walls to exclude from edge/midpoint snapping
+      const excludedWallIds = this.getExcludedWallIds(scene);
+
+      // Filter scene to remove excluded walls for snapping
+      const filteredScene: Scene = {
+        nodes: scene.nodes,
+        walls: new Map(
+          Array.from(scene.walls.entries()).filter(([wallId]) => !excludedWallIds.has(wallId))
+        ),
+      };
 
       // Calculate new positions with snapping
       for (const [nodeId, originalPos] of this.originalNodePositions) {
         const tentativePos = vec.add(originalPos, delta);
 
-        // Use findSnapCandidate with ALL snap types enabled
+        // Use findSnapCandidate with filtered scene (excludes selected+connected walls)
         const tentativeScreenPx = worldToScreen(tentativePos, viewport);
         
         const snapResult = findSnapCandidate(
           tentativeScreenPx,
-          scene,
+          filteredScene, // ✅ Use filtered scene without excluded walls
           viewport,
           {
-            snapToGrid: true,      // ✅ ENABLED - Snap to 1m grid
-            snapToNodes: true,     // ✅ ENABLED - Snap to other nodes
-            snapToEdges: true,     // ✅ ENABLED - Snap to wall centerlines and midpoints
-            excludeNodeIds: selectedNodeIds, // Exclude selected nodes
+            snapToGrid: true,
+            snapToNodes: true,
+            snapToEdges: true, // Now only considers non-excluded walls
+            excludeNodeIds: excludedNodeIds,
           }
         );
 
@@ -328,25 +406,35 @@ export class SelectTool {
       const nodePositions = new Map<string, { original: Vec2; final: Vec2 }>();
       const mergeTargets = new Map<string, string>();
 
-      // Get set of all selected node IDs
-      const selectedNodeIds = new Set(this.originalNodePositions.keys());
+      // Get ALL nodes to exclude (selected walls + connected walls)
+      const excludedNodeIds = this.getExcludedNodeIds(scene);
+      // Get ALL walls to exclude from edge/midpoint snapping
+      const excludedWallIds = this.getExcludedWallIds(scene);
+
+      // Filter scene to remove excluded walls for snapping
+      const filteredScene: Scene = {
+        nodes: scene.nodes,
+        walls: new Map(
+          Array.from(scene.walls.entries()).filter(([wallId]) => !excludedWallIds.has(wallId))
+        ),
+      };
 
       // Calculate final positions and detect merges
       for (const [nodeId, originalPos] of this.originalNodePositions) {
         const tentativePos = vec.add(originalPos, delta);
 
-        // Use findSnapCandidate for final merge detection with ALL snap types
+        // Use findSnapCandidate for final merge detection with filtered scene
         const tentativeScreenPx = worldToScreen(tentativePos, viewport);
         
         const snapResult = findSnapCandidate(
           tentativeScreenPx,
-          scene,
+          filteredScene, // ✅ Use filtered scene without excluded walls
           viewport,
           {
-            snapToGrid: true,      // ✅ ENABLED
-            snapToNodes: true,     // ✅ ENABLED
-            snapToEdges: true,     // ✅ ENABLED
-            excludeNodeIds: selectedNodeIds,
+            snapToGrid: true,
+            snapToNodes: true,
+            snapToEdges: true,
+            excludeNodeIds: excludedNodeIds,
           }
         );
 
@@ -391,7 +479,7 @@ export class SelectTool {
     const x = Math.min(this.context.marqueeStart.x, this.context.marqueeCurrent.x);
     const y = Math.min(this.context.marqueeStart.y, this.context.marqueeCurrent.y);
     const width = Math.abs(this.context.marqueeCurrent.x - this.context.marqueeStart.x);
-    const height = Math.abs(this.context.marqueeCurrent.y - this.context.marqueeStart.y); // ✅ FIXED
+    const height = Math.abs(this.context.marqueeCurrent.y - this.context.marqueeStart.y);
 
     return { x, y, width, height };
   }
