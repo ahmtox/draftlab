@@ -8,123 +8,164 @@ import { hitTestWallNode, hitTestWalls } from '../core/geometry/hit-testing';
 import * as vec from '../core/math/vec';
 
 const NODE_RADIUS_MM = 8;
+const MIN_MARQUEE_SIZE_PX = 5;
+const MIN_DRAG_DISTANCE_PX = 3;
 
-type DragMode = 'wall' | 'node-a' | 'node-b';
+type DragMode = 'wall' | 'node-a' | 'node-b' | 'marquee';
 
 export type SelectToolContext = {
-  state: 'idle' | 'dragging';
-  selectedWallId: string | null;
+  state: 'idle' | 'dragging' | 'marquee' | 'marquee-pending';
+  selectedWallIds: Set<string>;
   hoveredWallId: string | null;
   dragMode: DragMode | null;
   dragStartMm: Vec2 | null;
+  dragCurrentMm: Vec2 | null;
   offsetAMm: Vec2 | null;
   offsetBMm: Vec2 | null;
   snapCandidateA: SnapCandidate | null;
   snapCandidateB: SnapCandidate | null;
+  marqueeStart: Vec2 | null;
+  marqueeCurrent: Vec2 | null;
+  // Map of nodeId -> snap target nodeId for visual feedback
+  activeSnaps: Map<string, string>;
+  // Array of snap candidates for visual guides
+  snapCandidates: SnapCandidate[];
 };
 
 export class SelectTool {
   private context: SelectToolContext = {
     state: 'idle',
-    selectedWallId: null,
+    selectedWallIds: new Set(),
     hoveredWallId: null,
     dragMode: null,
     dragStartMm: null,
+    dragCurrentMm: null,
     offsetAMm: null,
     offsetBMm: null,
     snapCandidateA: null,
     snapCandidateB: null,
+    marqueeStart: null,
+    marqueeCurrent: null,
+    activeSnaps: new Map(),
+    snapCandidates: [],
   };
 
   private originalSceneSnapshot: Scene | null = null;
-  private originalNodeAPos: Vec2 | null = null;
-  private originalNodeBPos: Vec2 | null = null;
+  private originalNodePositions: Map<string, Vec2> = new Map();
 
   constructor(
     private onStateChange: (ctx: SelectToolContext) => void,
-    private onDragUpdate: (wallId: string, nodeAPos: Vec2, nodeBPos: Vec2) => void,
+    private onDragUpdate: (wallIds: Set<string>, nodePositions: Map<string, Vec2>) => void,
     private onDragCommit: (
-      nodeAId: string,
-      nodeBId: string,
-      finalNodeAPos: Vec2, 
-      finalNodeBPos: Vec2, 
-      originalNodeAPos: Vec2,
-      originalNodeBPos: Vec2,
-      mergeAToNodeId: string | null, 
-      mergeBToNodeId: string | null
+      nodePositions: Map<string, { original: Vec2; final: Vec2 }>,
+      mergeTargets: Map<string, string>
     ) => void
   ) {}
 
-  handlePointerDown(screenPx: Vec2, scene: Scene, viewport: Viewport): void {
+  handlePointerDown(screenPx: Vec2, scene: Scene, viewport: Viewport, modifiers: { ctrlKey: boolean; shiftKey: boolean }): void {
     const worldPos = screenToWorld(screenPx, viewport);
     const nodeRadiusMm = NODE_RADIUS_MM;
     const hitRadiusMm = 20 / viewport.scale;
 
-    // Hit test selected wall's nodes first
-    if (this.context.selectedWallId) {
-      const hitResult = hitTestWallNode(worldPos, this.context.selectedWallId, scene, nodeRadiusMm);
-      
-      if (hitResult === 'node-a' || hitResult === 'node-b' || hitResult === 'wall') {
-        const wall = scene.walls.get(this.context.selectedWallId)!;
+    const hitWallId = hitTestWalls(worldPos, scene, hitRadiusMm);
+
+    if (hitWallId) {
+      const isSelectedWall = this.context.selectedWallIds.has(hitWallId);
+
+      if (isSelectedWall) {
+        const hitResult = hitTestWallNode(worldPos, hitWallId, scene, nodeRadiusMm);
+        const dragMode = (hitResult === 'node-a' || hitResult === 'node-b' || hitResult === 'wall') 
+          ? hitResult as DragMode 
+          : 'wall';
+        
+        this.startMultiWallDrag(hitWallId, dragMode, worldPos, scene);
+        return;
+      }
+
+      if (modifiers.ctrlKey || modifiers.shiftKey) {
+        const newSelection = new Set(this.context.selectedWallIds);
+        newSelection.add(hitWallId);
+        
+        this.context = {
+          ...this.context,
+          selectedWallIds: newSelection,
+        };
+        this.onStateChange(this.context);
+      } else {
+        const wall = scene.walls.get(hitWallId)!;
         const nodeA = scene.nodes.get(wall.nodeAId)!;
         const nodeB = scene.nodes.get(wall.nodeBId)!;
-        
+
         this.originalSceneSnapshot = {
           nodes: new Map(scene.nodes),
           walls: new Map(scene.walls),
         };
 
-        // Store original positions for MoveNodeCommand
-        this.originalNodeAPos = { x: nodeA.x, y: nodeA.y };
-        this.originalNodeBPos = { x: nodeB.x, y: nodeB.y };
+        this.originalNodePositions.clear();
+        this.originalNodePositions.set(wall.nodeAId, { x: nodeA.x, y: nodeA.y });
+        this.originalNodePositions.set(wall.nodeBId, { x: nodeB.x, y: nodeB.y });
 
         this.context = {
           ...this.context,
           state: 'dragging',
-          dragMode: hitResult as DragMode,
-          dragStartMm: worldPos,
-          offsetAMm: hitResult !== 'node-b' ? vec.sub(nodeA, worldPos) : null,
-          offsetBMm: hitResult !== 'node-a' ? vec.sub(nodeB, worldPos) : null,
+          selectedWallIds: new Set([hitWallId]),
+          dragMode: 'wall',
+          dragStartMm: { x: worldPos.x, y: worldPos.y },
+          offsetAMm: vec.sub(nodeA, worldPos),
+          offsetBMm: vec.sub(nodeB, worldPos),
         };
-
+        
         this.onStateChange(this.context);
-        return;
       }
+    } else {
+      // Clicked on empty space
+      const shouldClearSelection = !modifiers.ctrlKey && !modifiers.shiftKey;
+
+      this.context = {
+        ...this.context,
+        state: 'marquee-pending',
+        dragMode: null,
+        marqueeStart: { x: screenPx.x, y: screenPx.y },
+        marqueeCurrent: { x: screenPx.x, y: screenPx.y },
+        hoveredWallId: null,
+        selectedWallIds: shouldClearSelection ? new Set() : this.context.selectedWallIds,
+      };
+
+      this.onStateChange(this.context);
     }
+  }
 
-    // Hit test any wall
-    const hitWallId = hitTestWalls(worldPos, scene, hitRadiusMm);
+  private startMultiWallDrag(triggerWallId: string, hitMode: DragMode, worldPos: Vec2, scene: Scene): void {
+    this.originalSceneSnapshot = {
+      nodes: new Map(scene.nodes),
+      walls: new Map(scene.walls),
+    };
 
-    if (hitWallId) {
-      const wall = scene.walls.get(hitWallId)!;
+    this.originalNodePositions.clear();
+
+    for (const wallId of this.context.selectedWallIds) {
+      const wall = scene.walls.get(wallId);
+      if (!wall) continue;
+
       const nodeA = scene.nodes.get(wall.nodeAId)!;
       const nodeB = scene.nodes.get(wall.nodeBId)!;
 
-      this.originalSceneSnapshot = {
-        nodes: new Map(scene.nodes),
-        walls: new Map(scene.walls),
-      };
-
-      // Store original positions
-      this.originalNodeAPos = { x: nodeA.x, y: nodeA.y };
-      this.originalNodeBPos = { x: nodeB.x, y: nodeB.y };
-
-      this.context = {
-        ...this.context,
-        state: 'dragging',
-        selectedWallId: hitWallId,
-        dragMode: 'wall',
-        dragStartMm: worldPos,
-        offsetAMm: vec.sub(nodeA, worldPos),
-        offsetBMm: vec.sub(nodeB, worldPos),
-      };
-    } else {
-      this.context = {
-        ...this.context,
-        selectedWallId: null,
-        dragMode: null,
-      };
+      if (!this.originalNodePositions.has(wall.nodeAId)) {
+        this.originalNodePositions.set(wall.nodeAId, { x: nodeA.x, y: nodeA.y });
+      }
+      if (!this.originalNodePositions.has(wall.nodeBId)) {
+        this.originalNodePositions.set(wall.nodeBId, { x: nodeB.x, y: nodeB.y });
+      }
     }
+
+    this.context = {
+      ...this.context,
+      state: 'dragging',
+      dragMode: hitMode,
+      dragStartMm: { x: worldPos.x, y: worldPos.y },
+      activeSnaps: new Map(),
+      snapCandidates: [],
+    };
 
     this.onStateChange(this.context);
   }
@@ -132,245 +173,320 @@ export class SelectTool {
   handlePointerMove(screenPx: Vec2, scene: Scene, viewport: Viewport): void {
     const worldPos = screenToWorld(screenPx, viewport);
 
-    if (this.context.state === 'dragging' && this.context.selectedWallId) {
-      const wall = scene.walls.get(this.context.selectedWallId);
-      if (!wall) return;
+    if (this.context.state === 'marquee-pending') {
+      if (!this.context.marqueeStart) return;
 
-      const originalNodeA = this.originalSceneSnapshot!.nodes.get(wall.nodeAId)!;
-      const originalNodeB = this.originalSceneSnapshot!.nodes.get(wall.nodeBId)!;
-
-      // Determine if nodes can snap (not shared with other walls)
-      const connectedToA = Array.from(this.originalSceneSnapshot!.walls.values())
-        .filter(w => w.id !== wall.id && (w.nodeAId === wall.nodeAId || w.nodeBId === wall.nodeAId));
-      const connectedToB = Array.from(this.originalSceneSnapshot!.walls.values())
-        .filter(w => w.id !== wall.id && (w.nodeAId === wall.nodeBId || w.nodeBId === wall.nodeBId));
-
-      const canSnapA = this.context.dragMode === 'node-a' || (this.context.dragMode === 'wall' && connectedToA.length === 0);
-      const canSnapB = this.context.dragMode === 'node-b' || (this.context.dragMode === 'wall' && connectedToB.length === 0);
-
-      // Compute new positions and snap candidates
-      const { finalNodeAPos, finalNodeBPos, snapA, snapB } = this.computeDragPositions(
-        worldPos,
-        screenPx,
-        originalNodeA,
-        originalNodeB,
-        wall,
-        canSnapA,
-        canSnapB,
-        viewport
+      const dragDistance = Math.sqrt(
+        Math.pow(screenPx.x - this.context.marqueeStart.x, 2) +
+        Math.pow(screenPx.y - this.context.marqueeStart.y, 2)
       );
 
-      this.context.snapCandidateA = snapA;
-      this.context.snapCandidateB = snapB;
+      if (dragDistance >= MIN_DRAG_DISTANCE_PX) {
+        this.context = {
+          ...this.context,
+          state: 'marquee',
+          marqueeCurrent: { x: screenPx.x, y: screenPx.y },
+        };
+        this.onStateChange(this.context);
+      }
+    } else if (this.context.state === 'marquee') {
+      this.context = {
+        ...this.context,
+        marqueeCurrent: { x: screenPx.x, y: screenPx.y },
+      };
+      
       this.onStateChange(this.context);
+    } else if (this.context.state === 'dragging' && this.context.selectedWallIds.size > 0) {
+      const delta = vec.sub(worldPos, this.context.dragStartMm!);
+      const newNodePositions = new Map<string, Vec2>();
+      const activeSnaps = new Map<string, string>();
+      const snapCandidates: SnapCandidate[] = [];
 
-      // Notify drag update (live preview)
-      this.onDragUpdate(this.context.selectedWallId, finalNodeAPos, finalNodeBPos);
+      // Get set of all selected node IDs (to exclude from snapping)
+      const selectedNodeIds = new Set(this.originalNodePositions.keys());
+
+      // Calculate new positions with snapping
+      for (const [nodeId, originalPos] of this.originalNodePositions) {
+        const tentativePos = vec.add(originalPos, delta);
+
+        // Use findSnapCandidate with ALL snap types enabled
+        const tentativeScreenPx = worldToScreen(tentativePos, viewport);
+        
+        const snapResult = findSnapCandidate(
+          tentativeScreenPx,
+          scene,
+          viewport,
+          {
+            snapToGrid: true,      // ✅ ENABLED - Snap to 1m grid
+            snapToNodes: true,     // ✅ ENABLED - Snap to other nodes
+            snapToEdges: true,     // ✅ ENABLED - Snap to wall centerlines and midpoints
+            excludeNodeIds: selectedNodeIds, // Exclude selected nodes
+          }
+        );
+
+        if (snapResult.snapped && snapResult.candidate) {
+          // Use snapped position (works for ALL snap types)
+          newNodePositions.set(nodeId, snapResult.point);
+          
+          // Track node merges ONLY for node-to-node snaps
+          if (snapResult.candidate.type === 'node' && snapResult.candidate.entityId) {
+            activeSnaps.set(nodeId, snapResult.candidate.entityId);
+          }
+
+          // Add snap candidate for visual feedback (all types)
+          snapCandidates.push({
+            point: snapResult.point,
+            type: snapResult.candidate.type,
+            entityId: snapResult.candidate.entityId,
+            priority: snapResult.candidate.priority,
+            distancePx: snapResult.candidate.distancePx,
+          });
+        } else {
+          // No snap, use tentative position
+          newNodePositions.set(nodeId, tentativePos);
+        }
+      }
+
+      // Update context with active snaps and snap candidates
+      this.context = {
+        ...this.context,
+        activeSnaps,
+        snapCandidates,
+      };
+
+      // Live preview
+      this.onDragUpdate(this.context.selectedWallIds, newNodePositions);
+      this.onStateChange(this.context);
     } else if (this.context.state === 'idle') {
       const hitRadiusMm = 20 / viewport.scale;
       const hoveredWallId = hitTestWalls(worldPos, scene, hitRadiusMm);
       
       if (hoveredWallId !== this.context.hoveredWallId) {
-        this.context.hoveredWallId = hoveredWallId;
+        this.context = {
+          ...this.context,
+          hoveredWallId,
+        };
         this.onStateChange(this.context);
       }
     }
   }
 
-  handlePointerUp(scene: Scene): void {
-    if (this.context.state === 'dragging' && this.context.selectedWallId) {
-      const wall = scene.walls.get(this.context.selectedWallId);
-      if (!wall || !this.originalNodeAPos || !this.originalNodeBPos) {
+  handlePointerUp(screenPx: Vec2, scene: Scene, viewport: Viewport): void {
+    if (this.context.state === 'marquee-pending') {
+      this.context = {
+        ...this.context,
+        state: 'idle',
+        dragMode: null,
+        marqueeStart: null,
+        marqueeCurrent: null,
+      };
+      
+      this.onStateChange(this.context);
+      return;
+    }
+
+    if (this.context.state === 'marquee') {
+      const marqueeBox = this.getMarqueeBox();
+      
+      if (!marqueeBox) {
         this.reset();
         return;
       }
 
-      // Get final node positions
-      const finalNodeA = scene.nodes.get(wall.nodeAId)!;
-      const finalNodeB = scene.nodes.get(wall.nodeBId)!;
+      const selectedWalls = new Set<string>();
+      for (const wall of scene.walls.values()) {
+        const nodeA = scene.nodes.get(wall.nodeAId);
+        const nodeB = scene.nodes.get(wall.nodeBId);
+        if (!nodeA || !nodeB) continue;
 
-      // Determine merge targets (snap to nodes only, not edges/grid)
-      const mergeAToNodeId = this.context.snapCandidateA?.type === 'node' ? this.context.snapCandidateA.entityId || null : null;
-      const mergeBToNodeId = this.context.snapCandidateB?.type === 'node' ? this.context.snapCandidateB.entityId || null : null;
+        const screenA = worldToScreen(nodeA, viewport);
+        const screenB = worldToScreen(nodeB, viewport);
 
-      this.onDragCommit(
-        wall.nodeAId,
-        wall.nodeBId,
-        { x: finalNodeA.x, y: finalNodeA.y },
-        { x: finalNodeB.x, y: finalNodeB.y },
-        this.originalNodeAPos,
-        this.originalNodeBPos,
-        mergeAToNodeId,
-        mergeBToNodeId
-      );
+        if (this.isPointInBox(screenA, marqueeBox) || 
+            this.isPointInBox(screenB, marqueeBox) ||
+            this.lineSegmentIntersectsRect(screenA, screenB, marqueeBox)) {
+          selectedWalls.add(wall.id);
+        }
+      }
+
+      const newSelection = new Set([...this.context.selectedWallIds, ...selectedWalls]);
+
+      this.context = {
+        ...this.context,
+        state: 'idle',
+        selectedWallIds: newSelection,
+        dragMode: null,
+        marqueeStart: null,
+        marqueeCurrent: null,
+      };
+
+      this.onStateChange(this.context);
+    } else if (this.context.state === 'dragging' && this.context.selectedWallIds.size > 0) {
+      const worldPos = screenToWorld(screenPx, viewport);
+      const delta = vec.sub(worldPos, this.context.dragStartMm!);
+
+      const nodePositions = new Map<string, { original: Vec2; final: Vec2 }>();
+      const mergeTargets = new Map<string, string>();
+
+      // Get set of all selected node IDs
+      const selectedNodeIds = new Set(this.originalNodePositions.keys());
+
+      // Calculate final positions and detect merges
+      for (const [nodeId, originalPos] of this.originalNodePositions) {
+        const tentativePos = vec.add(originalPos, delta);
+
+        // Use findSnapCandidate for final merge detection with ALL snap types
+        const tentativeScreenPx = worldToScreen(tentativePos, viewport);
+        
+        const snapResult = findSnapCandidate(
+          tentativeScreenPx,
+          scene,
+          viewport,
+          {
+            snapToGrid: true,      // ✅ ENABLED
+            snapToNodes: true,     // ✅ ENABLED
+            snapToEdges: true,     // ✅ ENABLED
+            excludeNodeIds: selectedNodeIds,
+          }
+        );
+
+        if (snapResult.snapped && snapResult.candidate) {
+          // Use snapped position
+          nodePositions.set(nodeId, {
+            original: originalPos,
+            final: snapResult.point,
+          });
+          
+          // Only merge if snapped to another node
+          if (snapResult.candidate.type === 'node' && snapResult.candidate.entityId) {
+            mergeTargets.set(nodeId, snapResult.candidate.entityId);
+          }
+        } else {
+          // No snap, just move
+          nodePositions.set(nodeId, {
+            original: originalPos,
+            final: tentativePos,
+          });
+        }
+      }
+
+      this.onDragCommit(nodePositions, mergeTargets);
+
+      this.context = {
+        ...this.context,
+        state: 'idle',
+        dragMode: null,
+        activeSnaps: new Map(),
+        snapCandidates: [],
+      };
+      this.onStateChange(this.context);
+    } else {
+      this.reset();
     }
-
-    this.reset();
   }
 
-  private computeDragPositions(
-    worldPos: Vec2,
-    screenPx: Vec2,
-    originalNodeA: Vec2,
-    originalNodeB: Vec2,
-    wall: any,
-    canSnapA: boolean,
-    canSnapB: boolean,
-    viewport: Viewport
-  ): { finalNodeAPos: Vec2; finalNodeBPos: Vec2; snapA: SnapCandidate | null; snapB: SnapCandidate | null } {
-    let finalNodeAPos = originalNodeA;
-    let finalNodeBPos = originalNodeB;
-    let snapA: SnapCandidate | null = null;
-    let snapB: SnapCandidate | null = null;
+  private getMarqueeBox(): { x: number; y: number; width: number; height: number } | null {
+    if (!this.context.marqueeStart || !this.context.marqueeCurrent) return null;
 
-    // Build snap scene (exclude selected wall from snapping targets)
-    const snapScene = {
-      nodes: new Map(this.originalSceneSnapshot!.nodes),
-      walls: new Map(this.originalSceneSnapshot!.walls),
-    };
-    snapScene.walls.delete(this.context.selectedWallId!);
+    const x = Math.min(this.context.marqueeStart.x, this.context.marqueeCurrent.x);
+    const y = Math.min(this.context.marqueeStart.y, this.context.marqueeCurrent.y);
+    const width = Math.abs(this.context.marqueeCurrent.x - this.context.marqueeStart.x);
+    const height = Math.abs(this.context.marqueeCurrent.y - this.context.marqueeStart.y); // ✅ FIXED
 
-    if (this.context.dragMode === 'wall') {
-      // Dragging entire wall - both nodes move together
-      const delta = vec.sub(worldPos, this.context.dragStartMm!);
-      const newNodeAPos = vec.add(originalNodeA, delta);
-      const newNodeBPos = vec.add(originalNodeB, delta);
+    return { x, y, width, height };
+  }
 
-      // Try to snap node A if allowed
-      if (canSnapA) {
-        const nodeAScreenPos = worldToScreen(newNodeAPos, viewport);
-        const snapResultA = findSnapCandidate(
-          nodeAScreenPos,
-          snapScene,
-          viewport,
-          {
-            snapToGrid: true,
-            snapToNodes: true,
-            snapToEdges: true,
-            excludeNodeIds: new Set([wall.nodeAId, wall.nodeBId]),
-          }
-        );
+  private isPointInBox(point: Vec2, box: { x: number; y: number; width: number; height: number }): boolean {
+    return point.x >= box.x && point.x <= box.x + box.width &&
+           point.y >= box.y && point.y <= box.y + box.height;
+  }
 
-        if (snapResultA.snapped && snapResultA.candidate) {
-          const snapDelta = vec.sub(snapResultA.point, originalNodeA);
-          finalNodeAPos = snapResultA.point;
-          finalNodeBPos = vec.add(originalNodeB, snapDelta);
-          snapA = snapResultA.candidate;
-        } else {
-          finalNodeAPos = newNodeAPos;
-          finalNodeBPos = newNodeBPos;
-        }
-      } else {
-        finalNodeAPos = newNodeAPos;
-        finalNodeBPos = newNodeBPos;
-      }
+  private lineSegmentIntersectsRect(
+    p1: Vec2,
+    p2: Vec2,
+    rect: { x: number; y: number; width: number; height: number }
+  ): boolean {
+    const lineMinX = Math.min(p1.x, p2.x);
+    const lineMaxX = Math.max(p1.x, p2.x);
+    const lineMinY = Math.min(p1.y, p2.y);
+    const lineMaxY = Math.max(p1.y, p2.y);
 
-      // Try to snap node B if allowed (independent of node A)
-      if (canSnapB) {
-        const nodeBScreenPos = worldToScreen(finalNodeBPos, viewport);
-        const snapResultB = findSnapCandidate(
-          nodeBScreenPos,
-          snapScene,
-          viewport,
-          {
-            snapToGrid: true,
-            snapToNodes: true,
-            snapToEdges: true,
-            excludeNodeIds: new Set([wall.nodeAId, wall.nodeBId]),
-          }
-        );
+    const rectMaxX = rect.x + rect.width;
+    const rectMaxY = rect.y + rect.height;
 
-        if (snapResultB.snapped && snapResultB.candidate) {
-          // If node B also snaps, only apply if node A didn't snap
-          if (!snapA) {
-            const snapDelta = vec.sub(snapResultB.point, originalNodeB);
-            finalNodeBPos = snapResultB.point;
-            finalNodeAPos = vec.add(originalNodeA, snapDelta);
-            snapB = snapResultB.candidate;
-          } else {
-            // Node A already snapped, just show guide for node B potential snap
-            snapB = snapResultB.candidate;
-          }
-        }
-      }
-    } else if (this.context.dragMode === 'node-a') {
-      // Dragging node A only
-      const newNodeAPos = vec.add(worldPos, this.context.offsetAMm!);
-
-      if (canSnapA) {
-        const nodeAScreenPos = worldToScreen(newNodeAPos, viewport);
-        const snapResultA = findSnapCandidate(
-          nodeAScreenPos,
-          snapScene,
-          viewport,
-          {
-            snapToGrid: true,
-            snapToNodes: true,
-            snapToEdges: true,
-            excludeNodeIds: new Set([wall.nodeAId, wall.nodeBId]),
-          }
-        );
-
-        if (snapResultA.snapped && snapResultA.candidate) {
-          finalNodeAPos = snapResultA.point;
-          snapA = snapResultA.candidate;
-        } else {
-          finalNodeAPos = newNodeAPos;
-        }
-      } else {
-        finalNodeAPos = newNodeAPos;
-      }
-
-      finalNodeBPos = originalNodeB;
-    } else if (this.context.dragMode === 'node-b') {
-      // Dragging node B only
-      const newNodeBPos = vec.add(worldPos, this.context.offsetBMm!);
-
-      if (canSnapB) {
-        const nodeBScreenPos = worldToScreen(newNodeBPos, viewport);
-        const snapResultB = findSnapCandidate(
-          nodeBScreenPos,
-          snapScene,
-          viewport,
-          {
-            snapToGrid: true,
-            snapToNodes: true,
-            snapToEdges: true,
-            excludeNodeIds: new Set([wall.nodeAId, wall.nodeBId]),
-          }
-        );
-
-        if (snapResultB.snapped && snapResultB.candidate) {
-          finalNodeBPos = snapResultB.point;
-          snapB = snapResultB.candidate;
-        } else {
-          finalNodeBPos = newNodeBPos;
-        }
-      } else {
-        finalNodeBPos = newNodeBPos;
-      }
-
-      finalNodeAPos = originalNodeA;
+    if (lineMaxX < rect.x || lineMinX > rectMaxX || 
+        lineMaxY < rect.y || lineMinY > rectMaxY) {
+      return false;
     }
 
-    return { finalNodeAPos, finalNodeBPos, snapA, snapB };
+    const edges = [
+      { start: { x: rect.x, y: rect.y }, end: { x: rectMaxX, y: rect.y } },
+      { start: { x: rectMaxX, y: rect.y }, end: { x: rectMaxX, y: rectMaxY } },
+      { start: { x: rectMaxX, y: rectMaxY }, end: { x: rect.x, y: rectMaxY } },
+      { start: { x: rect.x, y: rectMaxY }, end: { x: rect.x, y: rect.y } },
+    ];
+
+    for (const edge of edges) {
+      if (this.lineSegmentsIntersect(p1, p2, edge.start, edge.end)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private lineSegmentsIntersect(
+    p1: Vec2,
+    p2: Vec2,
+    p3: Vec2,
+    p4: Vec2
+  ): boolean {
+    const d1 = this.direction(p3, p4, p1);
+    const d2 = this.direction(p3, p4, p2);
+    const d3 = this.direction(p1, p2, p3);
+    const d4 = this.direction(p1, p2, p4);
+
+    if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+        ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+      return true;
+    }
+
+    if (d1 === 0 && this.onSegment(p3, p1, p4)) return true;
+    if (d2 === 0 && this.onSegment(p3, p2, p4)) return true;
+    if (d3 === 0 && this.onSegment(p1, p3, p2)) return true;
+    if (d4 === 0 && this.onSegment(p1, p4, p2)) return true;
+
+    return false;
+  }
+
+  private direction(p1: Vec2, p2: Vec2, p3: Vec2): number {
+    return (p3.x - p1.x) * (p2.y - p1.y) - (p2.x - p1.x) * (p3.y - p1.y);
+  }
+
+  private onSegment(p: Vec2, q: Vec2, r: Vec2): boolean {
+    return q.x <= Math.max(p.x, r.x) && q.x >= Math.min(p.x, r.x) &&
+           q.y <= Math.max(p.y, r.y) && q.y >= Math.min(p.y, r.y);
   }
 
   reset(): void {
     this.context = {
       state: 'idle',
-      selectedWallId: null,
+      selectedWallIds: new Set(),
       hoveredWallId: null,
       dragMode: null,
       dragStartMm: null,
+      dragCurrentMm: null,
       offsetAMm: null,
       offsetBMm: null,
       snapCandidateA: null,
       snapCandidateB: null,
+      marqueeStart: null,
+      marqueeCurrent: null,
+      activeSnaps: new Map(),
+      snapCandidates: [],
     };
     this.originalSceneSnapshot = null;
-    this.originalNodeAPos = null;
-    this.originalNodeBPos = null;
+    this.originalNodePositions.clear();
     this.onStateChange(this.context);
   }
 

@@ -8,7 +8,7 @@ import * as vec from '../../../core/math/vec';
 function WallsLayerComponent() {
   const viewport = useStore((state) => state.viewport);
   const scene = useStore((state) => state.scene);
-  const selectedWallId = useStore((state) => state.selectedWallId);
+  const selectedWallIds = useStore((state) => state.selectedWallIds);
   const hoveredWallId = useStore((state) => state.hoveredWallId);
 
   const wallShapes = useMemo(() => {
@@ -22,7 +22,6 @@ function WallsLayerComponent() {
       isHovered: boolean;
     }> = [];
 
-    // Calculate node radius in screen pixels (world mm * scale)
     const nodeRadiusPx = NODE_RADIUS_MM * viewport.scale;
 
     for (const wall of scene.walls.values()) {
@@ -34,12 +33,10 @@ function WallsLayerComponent() {
       const a = worldToScreen({ x: nodeA.x, y: nodeA.y }, viewport);
       const b = worldToScreen({ x: nodeB.x, y: nodeB.y }, viewport);
 
-      // Calculate perpendicular for thickness
       const dir = vec.normalize(vec.sub(nodeB, nodeA));
       const perp = vec.perpendicular(dir);
       const halfThickness = wall.thicknessMm / 2;
 
-      // Offset edges in world space, then convert to screen
       const startLeft = worldToScreen(vec.add(nodeA, vec.scale(perp, halfThickness)), viewport);
       const startRight = worldToScreen(vec.sub(nodeA, vec.scale(perp, halfThickness)), viewport);
       const endLeft = worldToScreen(vec.add(nodeB, vec.scale(perp, halfThickness)), viewport);
@@ -58,13 +55,13 @@ function WallsLayerComponent() {
         centerline: [a.x, a.y, b.x, b.y],
         nodeA: a,
         nodeB: b,
-        isSelected: wall.id === selectedWallId,
+        isSelected: selectedWallIds.has(wall.id),
         isHovered: wall.id === hoveredWallId,
       });
     }
 
     return { shapes, nodeRadiusPx };
-  }, [scene.nodes, scene.walls, viewport, selectedWallId, hoveredWallId]);
+  }, [scene.nodes, scene.walls, viewport, selectedWallIds, hoveredWallId]);
 
   return (
     <Layer listening={false}>
@@ -89,7 +86,7 @@ function WallsLayerComponent() {
             listening={false}
           />
           
-          {/* Node circles - scales with zoom */}
+          {/* Node circles */}
           <Circle
             x={shape.nodeA.x}
             y={shape.nodeA.y}

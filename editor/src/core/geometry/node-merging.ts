@@ -13,26 +13,43 @@ export function shouldMergeNodes(nodeA: Node, nodeB: Node): boolean {
 
 /**
  * Find a node at a specific position (within merge tolerance)
+ * @param position - World position in millimeters
+ * @param scene - Current scene
+ * @param excludeIds - Set of node IDs to exclude from search (e.g., selected nodes during drag)
+ * @returns Node ID if found within tolerance, null otherwise
  */
 export function findNodeAtPosition(
   position: Vec2,
   scene: Scene,
   excludeIds: Set<string> = new Set()
 ): string | null {
+  const mergeTolMm = DEFAULT_TOL.mergeTol; // 1mm tolerance
+  let closestNodeId: string | null = null;
+  let closestDistance = mergeTolMm;
+
   for (const node of scene.nodes.values()) {
+    // Skip excluded nodes
     if (excludeIds.has(node.id)) continue;
     
     const distance = vec.distance(position, node);
-    if (distance < DEFAULT_TOL.mergeTol) {
-      return node.id;
+    
+    // Find closest node within tolerance
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      closestNodeId = node.id;
     }
   }
-  return null;
+  
+  return closestNodeId;
 }
 
 /**
  * Merge a node into another node (parametric connection)
  * Updates all walls that reference fromNodeId to use toNodeId
+ * @param fromNodeId - Node to merge (will be deleted)
+ * @param toNodeId - Target node to merge into (will remain)
+ * @param scene - Current scene
+ * @returns New scene with merged nodes
  */
 export function mergeNodes(
   fromNodeId: string,
@@ -75,6 +92,10 @@ export function mergeNodes(
 /**
  * Split a shared node into separate nodes for specific walls
  * Creates a new node at the same position but disconnects the specified walls
+ * @param nodeId - Node to split
+ * @param wallIdsToSplit - Wall IDs that should use the new node
+ * @param scene - Current scene
+ * @returns New scene and the new node ID
  */
 export function splitNode(
   nodeId: string,
@@ -122,6 +143,9 @@ export function splitNode(
 
 /**
  * Get all walls connected to a node
+ * @param nodeId - Node ID to find connections for
+ * @param scene - Current scene
+ * @returns Array of wall IDs connected to the node
  */
 export function getWallsAtNode(nodeId: string, scene: Scene): string[] {
   const wallIds: string[] = [];

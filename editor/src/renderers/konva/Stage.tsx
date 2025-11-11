@@ -4,13 +4,14 @@ import { GridLayer } from './layers/GridLayer';
 import { WallsLayer } from './layers/WallsLayer';
 import { PreviewLayer } from './layers/PreviewLayer';
 import { GuidesLayer } from './layers/GuidesLayer';
+import { MarqueeLayer } from './layers/MarqueeLayer';
 import { useStore } from '../../state/store';
 import { MIN_ZOOM_SCALE, MAX_ZOOM_SCALE } from '../../core/constants';
 import { WallTool } from '../../tools/wall.tool';
 import { SelectTool } from '../../tools/select.tool';
 import { AddWallCommand } from '../../core/commands/add-wall';
-import { MergeNodesCommand } from '../../core/commands/merge-nodes';
 import { MoveNodeCommand } from '../../core/commands/move-node';
+import { MergeNodesCommand } from '../../core/commands/merge-nodes';
 import type { Vec2 } from '../../core/math/vec';
 
 export function Stage() {
@@ -20,6 +21,7 @@ export function Stage() {
   const scene = useStore((state) => state.scene);
   const setScene = useStore((state) => state.setScene);
   const history = useStore((state) => state.history);
+  const setSelectedWallIds = useStore((state) => state.setSelectedWallIds);
   
   const rafIdRef = useRef<number | null>(null);
   const [dimensions, setDimensions] = useState({
@@ -61,7 +63,6 @@ export function Stage() {
             endNodeId
           );
           
-          // Execute through history
           history.push(cmd);
         }
       );
@@ -69,98 +70,70 @@ export function Stage() {
 
     if (!selectToolRef.current) {
       selectToolRef.current = new SelectTool(
-        (ctx) => setSelectToolContext(ctx),
-        (wallId, nodeAPos, nodeBPos) => {
-          // Live preview during drag (no history)
-          const currentScene = useStore.getState().scene;
-          const wall = currentScene.walls.get(wallId);
-          if (!wall) return;
-
-          const newNodes = new Map(currentScene.nodes);
-          newNodes.set(wall.nodeAId, { ...newNodes.get(wall.nodeAId)!, x: nodeAPos.x, y: nodeAPos.y });
-          newNodes.set(wall.nodeBId, { ...newNodes.get(wall.nodeBId)!, x: nodeBPos.x, y: nodeBPos.y });
-          setScene({ nodes: newNodes, walls: currentScene.walls });
+        (ctx) => {
+          // CRITICAL: Update both local state AND Zustand store immediately
+          setSelectToolContext(ctx);
+          setSelectedWallIds(ctx.selectedWallIds);
         },
-        (
-          nodeAId: string,
-          nodeBId: string,
-          finalNodeAPos: Vec2, 
-          finalNodeBPos: Vec2,
-          originalNodeAPos: Vec2,
-          originalNodeBPos: Vec2,
-          mergeAToNodeId: string | null, 
-          mergeBToNodeId: string | null
-        ) => {
-          // Commit with history
-          history.beginGesture();
+        (wallIds, nodePositions) => {
+          // Live preview during drag
+          const currentScene = useStore.getState().scene;
+          const newNodes = new Map(currentScene.nodes);
 
-          // Add MoveNodeCommands for position changes
-          const nodeAMoved = originalNodeAPos.x !== finalNodeAPos.x || originalNodeAPos.y !== finalNodeAPos.y;
-          const nodeBMoved = originalNodeBPos.x !== finalNodeBPos.x || originalNodeBPos.y !== finalNodeBPos.y;
-
-          if (nodeAMoved) {
-            const moveACmd = new MoveNodeCommand(
-              nodeAId,
-              originalNodeAPos,
-              finalNodeAPos,
-              () => useStore.getState().scene,
-              setScene
-            );
-            history.push(moveACmd);
-          }
-
-          if (nodeBMoved) {
-            const moveBCmd = new MoveNodeCommand(
-              nodeBId,
-              originalNodeBPos,
-              finalNodeBPos,
-              () => useStore.getState().scene,
-              setScene
-            );
-            history.push(moveBCmd);
-          }
-
-          // Merge nodes if needed
-          if (mergeAToNodeId && mergeAToNodeId !== nodeAId) {
-            const mergeCmd = new MergeNodesCommand(
-              nodeAId,
-              mergeAToNodeId,
-              () => useStore.getState().scene,
-              setScene
-            );
-            history.push(mergeCmd);
-          }
-
-          if (mergeBToNodeId && mergeBToNodeId !== nodeBId) {
-            const currentSceneAfterA = useStore.getState().scene;
-            // Check if nodeB still exists (might have been merged already)
-            if (currentSceneAfterA.nodes.has(nodeBId)) {
-              const mergeCmd = new MergeNodesCommand(
-                nodeBId,
-                mergeBToNodeId,
-                () => useStore.getState().scene,
-                setScene
-              );
-              history.push(mergeCmd);
+          for (const [nodeId, position] of nodePositions) {
+            const node = newNodes.get(nodeId);
+            if (node) {
+              newNodes.set(nodeId, { ...node, x: position.x, y: position.y });
             }
           }
 
-          // End gesture with label
-          history.endGesture({ label: 'Drag Wall' });
+          setScene({ nodes: newNodes, walls: currentScene.walls });
+        },
+        (nodePositions, mergeTargets) => {
+          // Commit multi-wall drag
+          history.beginGesture();
+
+          // Add MoveNodeCommands
+          for (const [nodeId, { original, final }] of nodePositions) {
+            const moved = original.x !== final.x || original.y !== final.y;
+            if (moved) {
+              const cmd = new MoveNodeCommand(
+                nodeId,
+                original,
+                final,
+                () => useStore.getState().scene,
+                setScene
+              );
+              history.push(cmd);
+            }
+          }
+
+          // Add MergeNodeCommands
+          for (const [fromNodeId, toNodeId] of mergeTargets) {
+            const cmd = new MergeNodesCommand(
+              fromNodeId,
+              toNodeId,
+              () => useStore.getState().scene,
+              setScene
+            );
+            history.push(cmd);
+          }
+
+          history.endGesture({ label: 'Move Selection' });
         }
       );
     }
-  }, [history, setScene]);
+  }, [history, setScene, setSelectedWallIds]);
 
   useEffect(() => {
     wallToolRef.current?.reset();
     selectToolRef.current?.reset();
   }, [activeTool]);
 
-  // Keyboard shortcuts for undo/redo
+  // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Undo: Ctrl/Cmd + Z (not Shift)
+      // Undo: Ctrl/Cmd + Z
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
         e.preventDefault();
         useStore.getState().undo();
@@ -170,11 +143,22 @@ export function Stage() {
         e.preventDefault();
         useStore.getState().redo();
       }
+      // Delete/Backspace: Delete selected walls
+      else if ((e.key === 'Delete' || e.key === 'Backspace') && activeTool === 'select') {
+        e.preventDefault();
+        // TODO: Implement DeleteWallCommand
+        console.log('Delete selected walls:', useStore.getState().selectedWallIds);
+      }
+      // Escape: Clear selection
+      else if (e.key === 'Escape' && activeTool === 'select') {
+        e.preventDefault();
+        setSelectedWallIds(new Set());
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [activeTool, setSelectedWallIds]);
 
   const handleWheel = useCallback((e: any) => {
     e.evt.preventDefault();
@@ -212,11 +196,15 @@ export function Stage() {
 
   const handleMouseDown = useCallback((e: any) => {
     const pointer = e.target.getStage().getPointerPosition();
+    const modifiers = {
+      ctrlKey: e.evt.ctrlKey,
+      shiftKey: e.evt.shiftKey,
+    };
     
     if (activeTool === 'wall') {
       wallToolRef.current?.handlePointerDown(pointer, scene, viewport);
     } else if (activeTool === 'select') {
-      selectToolRef.current?.handlePointerDown(pointer, scene, viewport);
+      selectToolRef.current?.handlePointerDown(pointer, scene, viewport, modifiers);
     }
   }, [activeTool, scene, viewport]);
 
@@ -238,20 +226,24 @@ export function Stage() {
     if (activeTool === 'wall') {
       wallToolRef.current?.handlePointerUp(pointer, scene, viewport);
     } else if (activeTool === 'select') {
-      selectToolRef.current?.handlePointerUp(scene);
+      selectToolRef.current?.handlePointerUp(pointer, scene, viewport);
     }
   }, [activeTool, scene, viewport]);
 
   const showWallPreview = activeTool === 'wall' && wallToolContext?.state !== 'idle' && wallToolContext?.firstPointMm && wallToolContext?.currentPointMm;
   const showWallHover = activeTool === 'wall' && wallToolContext?.state === 'idle' && wallToolContext?.hoverPointMm;
 
+  // Collect snap candidates from active tool
   const wallSnapCandidates = activeTool === 'wall' && wallToolContext?.snapCandidate 
     ? [wallToolContext.snapCandidate] 
     : [];
 
-  const selectSnapCandidates = activeTool === 'select' && selectToolContext
-    ? [selectToolContext.snapCandidateA, selectToolContext.snapCandidateB].filter((c: any) => c !== null && c !== undefined)
+  const selectSnapCandidates = activeTool === 'select' && selectToolContext?.snapCandidates 
+    ? selectToolContext.snapCandidates 
     : [];
+
+  // Combine all snap candidates
+  const allSnapCandidates = [...wallSnapCandidates, ...selectSnapCandidates];
 
   return (
     <KonvaStage
@@ -261,14 +253,45 @@ export function Stage() {
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      style={{ display: 'block', position: 'absolute', top: 0, left: 0, cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
+      style={{ 
+        display: 'block', 
+        position: 'absolute', 
+        top: 0, 
+        left: 0, 
+        cursor: activeTool === 'select' ? 'default' : 'crosshair' 
+      }}
     >
+      {/* Bottom layers */}
       <GridLayer />
       <WallsLayer />
-      {showWallPreview && <PreviewLayer previewWall={{ startMm: wallToolContext.firstPointMm, endMm: wallToolContext.currentPointMm }} hoverPoint={null} />}
-      {showWallHover && <PreviewLayer previewWall={null} hoverPoint={wallToolContext.hoverPointMm} />}
-      <GuidesLayer snapCandidates={wallSnapCandidates} />
-      <GuidesLayer snapCandidates={selectSnapCandidates} />
+      
+      {/* Preview layers */}
+      {showWallPreview && (
+        <PreviewLayer 
+          previewWall={{ 
+            startMm: wallToolContext.firstPointMm, 
+            endMm: wallToolContext.currentPointMm 
+          }} 
+          hoverPoint={null} 
+        />
+      )}
+      {showWallHover && (
+        <PreviewLayer 
+          previewWall={null} 
+          hoverPoint={wallToolContext.hoverPointMm} 
+        />
+      )}
+      
+      {/* Guides - show for both wall and select tools */}
+      <GuidesLayer snapCandidates={allSnapCandidates} />
+      
+      {/* Marquee on TOP (last = highest z-index in Konva) */}
+      {activeTool === 'select' && selectToolContext?.state === 'marquee' && (
+        <MarqueeLayer 
+          marqueeStart={selectToolContext.marqueeStart} 
+          marqueeCurrent={selectToolContext.marqueeCurrent} 
+        />
+      )}
     </KonvaStage>
   );
 }

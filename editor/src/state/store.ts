@@ -28,7 +28,7 @@ type UIState = {
   currentProject: ProjectMeta | null;
   lastSavedAt: number | null;
   isSaving: boolean;
-  selectedWallId: string | null;
+  selectedWallIds: Set<string>; // Changed from single to Set
   hoveredWallId: string | null;
   dragState: DragState;
   snapCandidateA: any | null;
@@ -43,7 +43,7 @@ type UIState = {
   setLastSavedAt: (timestamp: number) => void;
   setIsSaving: (saving: boolean) => void;
   resetProject: () => void;
-  setSelectedWallId: (id: string | null) => void;
+  setSelectedWallIds: (ids: Set<string>) => void; // Changed
   setHoveredWallId: (id: string | null) => void;
   setDragState: (state: Partial<DragState>) => void;
   setSnapCandidateA: (candidate: any | null) => void;
@@ -71,7 +71,7 @@ export const useStore = create<UIState>((set, get) => ({
   currentProject: null,
   lastSavedAt: null,
   isSaving: false,
-  selectedWallId: null,
+  selectedWallIds: new Set(),
   hoveredWallId: null,
   dragState: {
     mode: null,
@@ -91,7 +91,7 @@ export const useStore = create<UIState>((set, get) => ({
   setCurrentProject: (project) => set({ currentProject: project }),
   setLastSavedAt: (timestamp) => set({ lastSavedAt: timestamp }),
   setIsSaving: (saving) => set({ isSaving: saving }),
-  setSelectedWallId: (id) => set({ selectedWallId: id }),
+  setSelectedWallIds: (ids) => set({ selectedWallIds: ids }),
   setHoveredWallId: (id) => set({ hoveredWallId: id }),
   setDragState: (state) => set((prev) => ({ 
     dragState: { ...prev.dragState, ...state } 
@@ -104,7 +104,7 @@ export const useStore = create<UIState>((set, get) => ({
       nodes: new Map(),
       walls: new Map(),
     },
-    selectedWallId: null,
+    selectedWallIds: new Set(),
     hoveredWallId: null,
     dragState: {
       mode: null,
