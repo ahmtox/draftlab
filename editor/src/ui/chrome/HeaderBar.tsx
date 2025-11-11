@@ -1,14 +1,23 @@
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../../state/store';
-import { useEffect, useState } from 'react';
 
 export function HeaderBar() {
   const navigate = useNavigate();
   const currentProject = useStore((state) => state.currentProject);
   const lastSavedAt = useStore((state) => state.lastSavedAt);
   const isSaving = useStore((state) => state.isSaving);
-  const [timeAgo, setTimeAgo] = useState<string>('');
+  const history = useStore((state) => state.history);
+  const undo = useStore((state) => state.undo);
+  const redo = useStore((state) => state.redo);
 
+  const [timeAgo, setTimeAgo] = useState<string>('');
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  const [undoLabel, setUndoLabel] = useState<string>('');
+  const [redoLabel, setRedoLabel] = useState<string>('');
+
+  // Update time ago
   useEffect(() => {
     if (!lastSavedAt) {
       setTimeAgo('');
@@ -17,8 +26,7 @@ export function HeaderBar() {
 
     const updateTimeAgo = () => {
       const now = Date.now();
-      const diffMs = now - lastSavedAt;
-      const diffSec = Math.floor(diffMs / 1000);
+      const diffSec = Math.floor((now - lastSavedAt) / 1000);
       const diffMin = Math.floor(diffSec / 60);
       const diffHour = Math.floor(diffMin / 60);
 
@@ -41,6 +49,26 @@ export function HeaderBar() {
     return () => clearInterval(interval);
   }, [lastSavedAt]);
 
+  // Update undo/redo state
+  useEffect(() => {
+    const updateHistoryState = () => {
+      setCanUndo(history.canUndo());
+      setCanRedo(history.canRedo());
+
+      const undoStack = history.getUndoStack();
+      const redoStack = history.getRedoStack();
+
+      setUndoLabel(undoStack.length > 0 ? undoStack[undoStack.length - 1].label : '');
+      setRedoLabel(redoStack.length > 0 ? redoStack[redoStack.length - 1].label : '');
+    };
+
+    updateHistoryState();
+    
+    // Poll for updates (could use event emitter for better performance)
+    const interval = setInterval(updateHistoryState, 100);
+    return () => clearInterval(interval);
+  }, [history]);
+
   return (
     <header className="fixed top-0 left-0 right-0 h-12 bg-white/95 backdrop-blur-sm text-gray-800 flex items-center px-6 z-50 border-b border-gray-200 shadow-sm">
       <div className="flex items-center gap-3 flex-1">
@@ -57,6 +85,40 @@ export function HeaderBar() {
         <span className="text-sm text-gray-600">
           {currentProject?.name || 'Untitled Project'}
         </span>
+      </div>
+
+      {/* Undo/Redo buttons */}
+      <div className="flex items-center gap-2 mr-4">
+        <button
+          onClick={undo}
+          disabled={!canUndo}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm transition-colors ${
+            canUndo
+              ? 'text-gray-700 hover:bg-gray-100 active:bg-gray-200'
+              : 'text-gray-400 cursor-not-allowed'
+          }`}
+          title={undoLabel ? `Undo: ${undoLabel} (Ctrl+Z)` : 'Undo (Ctrl+Z)'}
+        >
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+          </svg>
+          Undo
+        </button>
+        <button
+          onClick={redo}
+          disabled={!canRedo}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm transition-colors ${
+            canRedo
+              ? 'text-gray-700 hover:bg-gray-100 active:bg-gray-200'
+              : 'text-gray-400 cursor-not-allowed'
+          }`}
+          title={redoLabel ? `Redo: ${redoLabel} (Ctrl+Shift+Z)` : 'Redo (Ctrl+Shift+Z)'}
+        >
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 10H11a8 8 0 00-8 8v2m18-10l-6 6m6-6l-6-6" />
+          </svg>
+          Redo
+        </button>
       </div>
 
       {/* Save status indicator */}
@@ -92,7 +154,9 @@ export function HeaderBar() {
             </svg>
             Saved {timeAgo}
           </span>
-        ) : null}
+        ) : (
+          <span className="text-gray-400">Not saved</span>
+        )}
       </div>
     </header>
   );

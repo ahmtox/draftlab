@@ -4,6 +4,7 @@ import type { Scene } from '../core/domain/types';
 import type { ProjectMeta } from '../services/file-storage';
 import { DEFAULT_ZOOM_SCALE } from '../core/constants';
 import type { Vec2 } from '../core/math/vec';
+import { History } from '../core/commands/history';
 
 type WallParams = {
   thicknessMm: number;
@@ -32,6 +33,8 @@ type UIState = {
   dragState: DragState;
   snapCandidateA: any | null;
   snapCandidateB: any | null;
+  history: History;
+  
   setViewport: (viewport: Viewport) => void;
   setActiveTool: (tool: 'select' | 'wall' | 'room') => void;
   setWallParams: (params: WallParams) => void;
@@ -45,20 +48,9 @@ type UIState = {
   setDragState: (state: Partial<DragState>) => void;
   setSnapCandidateA: (candidate: any | null) => void;
   setSnapCandidateB: (candidate: any | null) => void;
+  undo: () => void;
+  redo: () => void;
 };
-
-const getEmptyScene = (): Scene => ({
-  nodes: new Map(),
-  walls: new Map(),
-});
-
-const getEmptyDragState = (): DragState => ({
-  mode: null,
-  startWorldMm: null,
-  offsetAMm: null,
-  offsetBMm: null,
-  originalSceneSnapshot: null,
-});
 
 export const useStore = create<UIState>((set, get) => ({
   viewport: {
@@ -66,21 +58,32 @@ export const useStore = create<UIState>((set, get) => ({
     centerY: 0,
     scale: DEFAULT_ZOOM_SCALE,
   },
-  activeTool: 'wall',
+  activeTool: 'select',
   wallParams: {
-    thicknessMm: 150,
-    heightMm: 3000,
+    thicknessMm: 200,
+    heightMm: 2400,
     raiseFromFloorMm: 0,
   },
-  scene: getEmptyScene(),
+  scene: {
+    nodes: new Map(),
+    walls: new Map(),
+  },
   currentProject: null,
   lastSavedAt: null,
   isSaving: false,
   selectedWallId: null,
   hoveredWallId: null,
-  dragState: getEmptyDragState(),
+  dragState: {
+    mode: null,
+    startWorldMm: null,
+    offsetAMm: null,
+    offsetBMm: null,
+    originalSceneSnapshot: null,
+  },
   snapCandidateA: null,
   snapCandidateB: null,
+  history: new History(),
+
   setViewport: (viewport) => set({ viewport }),
   setActiveTool: (tool) => set({ activeTool: tool }),
   setWallParams: (params) => set({ wallParams: params }),
@@ -88,22 +91,46 @@ export const useStore = create<UIState>((set, get) => ({
   setCurrentProject: (project) => set({ currentProject: project }),
   setLastSavedAt: (timestamp) => set({ lastSavedAt: timestamp }),
   setIsSaving: (saving) => set({ isSaving: saving }),
-  resetProject: () => set({ 
-    scene: getEmptyScene(),
-    currentProject: null,
-    lastSavedAt: null,
-    isSaving: false,
-    selectedWallId: null,
-    hoveredWallId: null,
-    dragState: getEmptyDragState(),
-    snapCandidateA: null,
-    snapCandidateB: null,
-  }),
   setSelectedWallId: (id) => set({ selectedWallId: id }),
   setHoveredWallId: (id) => set({ hoveredWallId: id }),
-  setDragState: (newState) => set({ 
-    dragState: { ...get().dragState, ...newState } 
-  }),
+  setDragState: (state) => set((prev) => ({ 
+    dragState: { ...prev.dragState, ...state } 
+  })),
   setSnapCandidateA: (candidate) => set({ snapCandidateA: candidate }),
   setSnapCandidateB: (candidate) => set({ snapCandidateB: candidate }),
+
+  resetProject: () => set({
+    scene: {
+      nodes: new Map(),
+      walls: new Map(),
+    },
+    selectedWallId: null,
+    hoveredWallId: null,
+    dragState: {
+      mode: null,
+      startWorldMm: null,
+      offsetAMm: null,
+      offsetBMm: null,
+      originalSceneSnapshot: null,
+    },
+    snapCandidateA: null,
+    snapCandidateB: null,
+    history: new History(),
+  }),
+
+  undo: () => {
+    const history = get().history;
+    const result = history.undo();
+    if (!result.ok) {
+      console.error('Undo failed:', result.error);
+    }
+  },
+
+  redo: () => {
+    const history = get().history;
+    const result = history.redo();
+    if (!result.ok) {
+      console.error('Redo failed:', result.error);
+    }
+  },
 }));

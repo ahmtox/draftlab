@@ -28,7 +28,6 @@ export class AddWallCommand implements ICommand {
     const timestamp = Date.now();
     const random = Math.random().toString(36).substr(2, 9);
     
-    // Use existing node IDs or generate new ones
     this.nodeAId = existingNodeAId || `node-${timestamp}-${random}-a`;
     this.nodeBId = existingNodeBId || `node-${timestamp}-${random}-b`;
     this.wallId = `wall-${timestamp}-${random}`;
@@ -48,7 +47,6 @@ export class AddWallCommand implements ICommand {
       const newNodes = new Map(scene.nodes);
       const newWalls = new Map(scene.walls);
 
-      // Only create nodes if they don't exist
       if (this.createdNodeA) {
         newNodes.set(this.nodeAId, { 
           id: this.nodeAId, 
@@ -65,7 +63,6 @@ export class AddWallCommand implements ICommand {
         });
       }
 
-      // Add new wall
       newWalls.set(this.wallId, {
         id: this.wallId,
         nodeAId: this.nodeAId,
@@ -94,7 +91,6 @@ export class AddWallCommand implements ICommand {
       const newNodes = new Map(scene.nodes);
       const newWalls = new Map(scene.walls);
 
-      // Only delete nodes we created
       if (this.createdNodeA) {
         newNodes.delete(this.nodeAId);
       }
@@ -117,7 +113,8 @@ export class AddWallCommand implements ICommand {
     }
   }
 
-  canMergeWith(): boolean {
+  canMergeWith(other: ICommand): boolean {
+    // AddWallCommand doesn't merge with other commands
     return false;
   }
 }

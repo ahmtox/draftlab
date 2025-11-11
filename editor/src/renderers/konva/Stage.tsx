@@ -10,6 +10,8 @@ import { WallTool } from '../../tools/wall.tool';
 import { SelectTool } from '../../tools/select.tool';
 import { AddWallCommand } from '../../core/commands/add-wall';
 import { MergeNodesCommand } from '../../core/commands/merge-nodes';
+import { MoveNodeCommand } from '../../core/commands/move-node';
+import type { Vec2 } from '../../core/math/vec';
 
 export function Stage() {
   const viewport = useStore((state) => state.viewport);
@@ -17,6 +19,7 @@ export function Stage() {
   const activeTool = useStore((state) => state.activeTool);
   const scene = useStore((state) => state.scene);
   const setScene = useStore((state) => state.setScene);
+  const history = useStore((state) => state.history);
   
   const rafIdRef = useRef<number | null>(null);
   const [dimensions, setDimensions] = useState({
@@ -57,7 +60,9 @@ export function Stage() {
             startNodeId,
             endNodeId
           );
-          cmd.execute();
+          
+          // Execute through history
+          history.push(cmd);
         }
       );
     }
@@ -66,55 +71,110 @@ export function Stage() {
       selectToolRef.current = new SelectTool(
         (ctx) => setSelectToolContext(ctx),
         (wallId, nodeAPos, nodeBPos) => {
-          const currentScene = useStore.getState().scene;
-          const newNodes = new Map(currentScene.nodes);
-          const wall = currentScene.walls.get(wallId)!;
-          newNodes.set(wall.nodeAId, { ...newNodes.get(wall.nodeAId)!, x: nodeAPos.x, y: nodeAPos.y });
-          newNodes.set(wall.nodeBId, { ...newNodes.get(wall.nodeBId)!, x: nodeBPos.x, y: nodeBPos.y });
-          setScene({ nodes: newNodes, walls: currentScene.walls });
-        },
-        (wallId, finalNodeAPos, finalNodeBPos, mergeAToNodeId, mergeBToNodeId) => {
+          // Live preview during drag (no history)
           const currentScene = useStore.getState().scene;
           const wall = currentScene.walls.get(wallId);
           if (!wall) return;
 
           const newNodes = new Map(currentScene.nodes);
-          newNodes.set(wall.nodeAId, { ...newNodes.get(wall.nodeAId)!, x: finalNodeAPos.x, y: finalNodeAPos.y });
-          newNodes.set(wall.nodeBId, { ...newNodes.get(wall.nodeBId)!, x: finalNodeBPos.x, y: finalNodeBPos.y });
+          newNodes.set(wall.nodeAId, { ...newNodes.get(wall.nodeAId)!, x: nodeAPos.x, y: nodeAPos.y });
+          newNodes.set(wall.nodeBId, { ...newNodes.get(wall.nodeBId)!, x: nodeBPos.x, y: nodeBPos.y });
           setScene({ nodes: newNodes, walls: currentScene.walls });
+        },
+        (
+          nodeAId: string,
+          nodeBId: string,
+          finalNodeAPos: Vec2, 
+          finalNodeBPos: Vec2,
+          originalNodeAPos: Vec2,
+          originalNodeBPos: Vec2,
+          mergeAToNodeId: string | null, 
+          mergeBToNodeId: string | null
+        ) => {
+          // Commit with history
+          history.beginGesture();
 
-          if (mergeAToNodeId && mergeAToNodeId !== wall.nodeAId) {
+          // Add MoveNodeCommands for position changes
+          const nodeAMoved = originalNodeAPos.x !== finalNodeAPos.x || originalNodeAPos.y !== finalNodeAPos.y;
+          const nodeBMoved = originalNodeBPos.x !== finalNodeBPos.x || originalNodeBPos.y !== finalNodeBPos.y;
+
+          if (nodeAMoved) {
+            const moveACmd = new MoveNodeCommand(
+              nodeAId,
+              originalNodeAPos,
+              finalNodeAPos,
+              () => useStore.getState().scene,
+              setScene
+            );
+            history.push(moveACmd);
+          }
+
+          if (nodeBMoved) {
+            const moveBCmd = new MoveNodeCommand(
+              nodeBId,
+              originalNodeBPos,
+              finalNodeBPos,
+              () => useStore.getState().scene,
+              setScene
+            );
+            history.push(moveBCmd);
+          }
+
+          // Merge nodes if needed
+          if (mergeAToNodeId && mergeAToNodeId !== nodeAId) {
             const mergeCmd = new MergeNodesCommand(
-              wall.nodeAId,
+              nodeAId,
               mergeAToNodeId,
               () => useStore.getState().scene,
               setScene
             );
-            mergeCmd.execute();
+            history.push(mergeCmd);
           }
 
-          if (mergeBToNodeId && mergeBToNodeId !== wall.nodeBId) {
+          if (mergeBToNodeId && mergeBToNodeId !== nodeBId) {
             const currentSceneAfterA = useStore.getState().scene;
-            const wallAfterA = currentSceneAfterA.walls.get(wallId);
-            if (wallAfterA) {
+            // Check if nodeB still exists (might have been merged already)
+            if (currentSceneAfterA.nodes.has(nodeBId)) {
               const mergeCmd = new MergeNodesCommand(
-                wallAfterA.nodeBId,
+                nodeBId,
                 mergeBToNodeId,
                 () => useStore.getState().scene,
                 setScene
               );
-              mergeCmd.execute();
+              history.push(mergeCmd);
             }
           }
+
+          // End gesture with label
+          history.endGesture({ label: 'Drag Wall' });
         }
       );
     }
-  }, []);
+  }, [history, setScene]);
 
   useEffect(() => {
     wallToolRef.current?.reset();
     selectToolRef.current?.reset();
   }, [activeTool]);
+
+  // Keyboard shortcuts for undo/redo
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Undo: Ctrl/Cmd + Z (not Shift)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        useStore.getState().undo();
+      }
+      // Redo: Ctrl/Cmd + Shift + Z or Ctrl/Cmd + Y
+      else if ((e.ctrlKey || e.metaKey) && (e.shiftKey && e.key === 'z' || e.key === 'y')) {
+        e.preventDefault();
+        useStore.getState().redo();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const handleWheel = useCallback((e: any) => {
     e.evt.preventDefault();

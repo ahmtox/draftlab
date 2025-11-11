@@ -3,25 +3,25 @@ import type { Scene } from '../core/domain/types';
 import type { Viewport } from '../renderers/konva/viewport';
 import type { SnapCandidate } from '../core/geometry/snapping';
 import { screenToWorld, worldToScreen } from '../renderers/konva/viewport';
-import { hitTestWalls, hitTestWallNode, getConnectedWalls } from '../core/geometry/hit-testing';
 import { findSnapCandidate } from '../core/geometry/snapping';
-import { NODE_RADIUS_MM } from '../core/constants';
+import { hitTestWallNode, hitTestWalls } from '../core/geometry/hit-testing';
 import * as vec from '../core/math/vec';
 
-export type SelectToolState = 'idle' | 'dragging';
-export type DragMode = 'wall' | 'node-a' | 'node-b' | null;
+const NODE_RADIUS_MM = 8;
 
-export interface SelectToolContext {
-  state: SelectToolState;
+type DragMode = 'wall' | 'node-a' | 'node-b';
+
+export type SelectToolContext = {
+  state: 'idle' | 'dragging';
   selectedWallId: string | null;
   hoveredWallId: string | null;
-  dragMode: DragMode;
+  dragMode: DragMode | null;
   dragStartMm: Vec2 | null;
   offsetAMm: Vec2 | null;
   offsetBMm: Vec2 | null;
   snapCandidateA: SnapCandidate | null;
   snapCandidateB: SnapCandidate | null;
-}
+};
 
 export class SelectTool {
   private context: SelectToolContext = {
@@ -37,11 +37,22 @@ export class SelectTool {
   };
 
   private originalSceneSnapshot: Scene | null = null;
+  private originalNodeAPos: Vec2 | null = null;
+  private originalNodeBPos: Vec2 | null = null;
 
   constructor(
     private onStateChange: (ctx: SelectToolContext) => void,
     private onDragUpdate: (wallId: string, nodeAPos: Vec2, nodeBPos: Vec2) => void,
-    private onDragCommit: (wallId: string, finalNodeAPos: Vec2, finalNodeBPos: Vec2, mergeAToNodeId: string | null, mergeBToNodeId: string | null) => void
+    private onDragCommit: (
+      nodeAId: string,
+      nodeBId: string,
+      finalNodeAPos: Vec2, 
+      finalNodeBPos: Vec2, 
+      originalNodeAPos: Vec2,
+      originalNodeBPos: Vec2,
+      mergeAToNodeId: string | null, 
+      mergeBToNodeId: string | null
+    ) => void
   ) {}
 
   handlePointerDown(screenPx: Vec2, scene: Scene, viewport: Viewport): void {
@@ -62,6 +73,10 @@ export class SelectTool {
           nodes: new Map(scene.nodes),
           walls: new Map(scene.walls),
         };
+
+        // Store original positions for MoveNodeCommand
+        this.originalNodeAPos = { x: nodeA.x, y: nodeA.y };
+        this.originalNodeBPos = { x: nodeB.x, y: nodeB.y };
 
         this.context = {
           ...this.context,
@@ -89,7 +104,11 @@ export class SelectTool {
         nodes: new Map(scene.nodes),
         walls: new Map(scene.walls),
       };
-      
+
+      // Store original positions
+      this.originalNodeAPos = { x: nodeA.x, y: nodeA.y };
+      this.originalNodeBPos = { x: nodeB.x, y: nodeB.y };
+
       this.context = {
         ...this.context,
         state: 'dragging',
@@ -113,15 +132,18 @@ export class SelectTool {
   handlePointerMove(screenPx: Vec2, scene: Scene, viewport: Viewport): void {
     const worldPos = screenToWorld(screenPx, viewport);
 
-    if (this.context.state === 'dragging' && this.context.selectedWallId && this.originalSceneSnapshot) {
+    if (this.context.state === 'dragging' && this.context.selectedWallId) {
       const wall = scene.walls.get(this.context.selectedWallId);
       if (!wall) return;
 
-      const originalNodeA = this.originalSceneSnapshot.nodes.get(wall.nodeAId)!;
-      const originalNodeB = this.originalSceneSnapshot.nodes.get(wall.nodeBId)!;
+      const originalNodeA = this.originalSceneSnapshot!.nodes.get(wall.nodeAId)!;
+      const originalNodeB = this.originalSceneSnapshot!.nodes.get(wall.nodeBId)!;
 
-      const connectedToA = getConnectedWalls(wall.nodeAId, this.context.selectedWallId, scene);
-      const connectedToB = getConnectedWalls(wall.nodeBId, this.context.selectedWallId, scene);
+      // Determine if nodes can snap (not shared with other walls)
+      const connectedToA = Array.from(this.originalSceneSnapshot!.walls.values())
+        .filter(w => w.id !== wall.id && (w.nodeAId === wall.nodeAId || w.nodeBId === wall.nodeAId));
+      const connectedToB = Array.from(this.originalSceneSnapshot!.walls.values())
+        .filter(w => w.id !== wall.id && (w.nodeAId === wall.nodeBId || w.nodeBId === wall.nodeBId));
 
       const canSnapA = this.context.dragMode === 'node-a' || (this.context.dragMode === 'wall' && connectedToA.length === 0);
       const canSnapB = this.context.dragMode === 'node-b' || (this.context.dragMode === 'wall' && connectedToB.length === 0);
@@ -142,14 +164,14 @@ export class SelectTool {
       this.context.snapCandidateB = snapB;
       this.onStateChange(this.context);
 
-      // Notify drag update
+      // Notify drag update (live preview)
       this.onDragUpdate(this.context.selectedWallId, finalNodeAPos, finalNodeBPos);
     } else if (this.context.state === 'idle') {
       const hitRadiusMm = 20 / viewport.scale;
-      const hitWallId = hitTestWalls(worldPos, scene, hitRadiusMm);
+      const hoveredWallId = hitTestWalls(worldPos, scene, hitRadiusMm);
       
-      if (this.context.hoveredWallId !== hitWallId) {
-        this.context.hoveredWallId = hitWallId;
+      if (hoveredWallId !== this.context.hoveredWallId) {
+        this.context.hoveredWallId = hoveredWallId;
         this.onStateChange(this.context);
       }
     }
@@ -158,7 +180,7 @@ export class SelectTool {
   handlePointerUp(scene: Scene): void {
     if (this.context.state === 'dragging' && this.context.selectedWallId) {
       const wall = scene.walls.get(this.context.selectedWallId);
-      if (!wall) {
+      if (!wall || !this.originalNodeAPos || !this.originalNodeBPos) {
         this.reset();
         return;
       }
@@ -172,9 +194,12 @@ export class SelectTool {
       const mergeBToNodeId = this.context.snapCandidateB?.type === 'node' ? this.context.snapCandidateB.entityId || null : null;
 
       this.onDragCommit(
-        this.context.selectedWallId,
+        wall.nodeAId,
+        wall.nodeBId,
         { x: finalNodeA.x, y: finalNodeA.y },
         { x: finalNodeB.x, y: finalNodeB.y },
+        this.originalNodeAPos,
+        this.originalNodeBPos,
         mergeAToNodeId,
         mergeBToNodeId
       );
@@ -227,7 +252,6 @@ export class SelectTool {
         );
 
         if (snapResultA.snapped && snapResultA.candidate) {
-          // If node A snaps, move node B by the same delta to preserve wall length/angle
           const snapDelta = vec.sub(snapResultA.point, originalNodeA);
           finalNodeAPos = snapResultA.point;
           finalNodeBPos = vec.add(originalNodeB, snapDelta);
@@ -272,11 +296,11 @@ export class SelectTool {
     } else if (this.context.dragMode === 'node-a') {
       // Dragging node A only
       const newNodeAPos = vec.add(worldPos, this.context.offsetAMm!);
-      finalNodeBPos = originalNodeB; // Keep node B at original position
 
       if (canSnapA) {
+        const nodeAScreenPos = worldToScreen(newNodeAPos, viewport);
         const snapResultA = findSnapCandidate(
-          screenPx,
+          nodeAScreenPos,
           snapScene,
           viewport,
           {
@@ -296,14 +320,16 @@ export class SelectTool {
       } else {
         finalNodeAPos = newNodeAPos;
       }
+
+      finalNodeBPos = originalNodeB;
     } else if (this.context.dragMode === 'node-b') {
       // Dragging node B only
       const newNodeBPos = vec.add(worldPos, this.context.offsetBMm!);
-      finalNodeAPos = originalNodeA; // Keep node A at original position
 
       if (canSnapB) {
+        const nodeBScreenPos = worldToScreen(newNodeBPos, viewport);
         const snapResultB = findSnapCandidate(
-          screenPx,
+          nodeBScreenPos,
           snapScene,
           viewport,
           {
@@ -323,6 +349,8 @@ export class SelectTool {
       } else {
         finalNodeBPos = newNodeBPos;
       }
+
+      finalNodeAPos = originalNodeA;
     }
 
     return { finalNodeAPos, finalNodeBPos, snapA, snapB };
@@ -341,6 +369,8 @@ export class SelectTool {
       snapCandidateB: null,
     };
     this.originalSceneSnapshot = null;
+    this.originalNodeAPos = null;
+    this.originalNodeBPos = null;
     this.onStateChange(this.context);
   }
 
