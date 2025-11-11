@@ -1,12 +1,14 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Stage } from '../renderers/konva/Stage';
+import { Scene3D } from '../renderers/three/Scene3D';
 import { useStore } from '../state/store';
 import { fileStorage } from '../services/file-storage';
 import { DEFAULT_ZOOM_SCALE } from '../core/constants';
 import { HeaderBar } from '../ui/chrome/HeaderBar';
 import { Sidebar } from '../ui/panels/Sidebar';
 import { WallProperties } from '../ui/panels/WallProperties';
+import { ViewModeToggle } from '../ui/chrome/ViewModeToggle';
 
 export function EditorPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -23,10 +25,11 @@ export function EditorPage() {
   const resetProject = useStore((state) => state.resetProject);
   const scene = useStore((state) => state.scene);
   const currentProject = useStore((state) => state.currentProject);
+  const viewMode = useStore((state) => state.viewMode);
 
   const saveTimeoutRef = useRef<number | null>(null);
   const isSavingRef = useRef(false);
-  const unmountSaveRef = useRef(false); // Track if we've saved on unmount
+  const unmountSaveRef = useRef(false);
 
   // Save function
   const saveScene = useCallback(async () => {
@@ -100,7 +103,7 @@ export function EditorPage() {
     // Only reset and reload if projectId actually changed
     if (lastProjectIdRef.current !== projectId) {
       lastProjectIdRef.current = projectId;
-      unmountSaveRef.current = false; // Reset unmount save flag
+      unmountSaveRef.current = false;
       
       // Reset state before loading new project
       resetProject();
@@ -185,8 +188,10 @@ export function EditorPage() {
       <HeaderBar />
       <Sidebar />
       <WallProperties />
+      <ViewModeToggle />
+      
       <div className="absolute top-12 left-0 right-0 bottom-0">
-        <Stage />
+        {viewMode === '2D' ? <Stage /> : <Scene3D />}
       </div>
     </div>
   );

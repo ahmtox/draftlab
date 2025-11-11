@@ -28,11 +28,12 @@ type UIState = {
   currentProject: ProjectMeta | null;
   lastSavedAt: number | null;
   isSaving: boolean;
-  selectedWallIds: Set<string>; // Changed from single to Set
+  selectedWallIds: Set<string>;
   hoveredWallId: string | null;
   dragState: DragState;
   snapCandidateA: any | null;
   snapCandidateB: any | null;
+  viewMode: '2D' | '3D'; // ✅ NEW
   history: History;
   
   setViewport: (viewport: Viewport) => void;
@@ -43,11 +44,12 @@ type UIState = {
   setLastSavedAt: (timestamp: number) => void;
   setIsSaving: (saving: boolean) => void;
   resetProject: () => void;
-  setSelectedWallIds: (ids: Set<string>) => void; // Changed
+  setSelectedWallIds: (ids: Set<string>) => void;
   setHoveredWallId: (id: string | null) => void;
   setDragState: (state: Partial<DragState>) => void;
   setSnapCandidateA: (candidate: any | null) => void;
   setSnapCandidateB: (candidate: any | null) => void;
+  setViewMode: (mode: '2D' | '3D') => void; // ✅ NEW
   undo: () => void;
   redo: () => void;
 };
@@ -82,6 +84,7 @@ export const useStore = create<UIState>((set, get) => ({
   },
   snapCandidateA: null,
   snapCandidateB: null,
+  viewMode: '2D', // ✅ NEW - default to 2D
   history: new History(),
 
   setViewport: (viewport) => set({ viewport }),
@@ -98,6 +101,7 @@ export const useStore = create<UIState>((set, get) => ({
   })),
   setSnapCandidateA: (candidate) => set({ snapCandidateA: candidate }),
   setSnapCandidateB: (candidate) => set({ snapCandidateB: candidate }),
+  setViewMode: (mode) => set({ viewMode: mode }), // ✅ NEW
 
   resetProject: () => set({
     scene: {

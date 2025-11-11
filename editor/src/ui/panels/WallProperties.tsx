@@ -103,7 +103,7 @@ export function WallProperties() {
   };
 
   return (
-    <div className="fixed top-16 right-4 w-56 bg-white rounded-xl shadow-lg p-4 z-30 border border-gray-200">
+    <div className="fixed top-32 right-4 w-56 bg-white rounded-xl shadow-lg p-4 z-30 border border-gray-200">
       <h2 className="text-gray-800 font-semibold mb-3 text-sm">Wall Properties</h2>
       
       <div className="space-y-3">
