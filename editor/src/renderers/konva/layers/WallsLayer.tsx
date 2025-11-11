@@ -3,6 +3,7 @@ import { Layer, Line, Circle } from 'react-konva';
 import { useStore } from '../../../state/store';
 import { worldToScreen } from '../viewport';
 import { NODE_RADIUS_MM } from '../../../core/constants';
+import { buildWallPolygon } from '../../../core/geometry/miter';
 import * as vec from '../../../core/math/vec';
 
 function WallsLayerComponent() {
@@ -30,48 +31,44 @@ function WallsLayerComponent() {
 
       if (!nodeA || !nodeB) continue;
 
-      const a = worldToScreen({ x: nodeA.x, y: nodeA.y }, viewport);
-      const b = worldToScreen({ x: nodeB.x, y: nodeB.y }, viewport);
+      // ✅ Use mitering to compute wall polygon
+      const polygonMm = buildWallPolygon(wall, scene);
+      
+      // Convert polygon to screen coordinates
+      const polygon: number[] = [];
+      for (const point of polygonMm) {
+        const screenPt = worldToScreen(point, viewport);
+        polygon.push(screenPt.x, screenPt.y);
+      }
 
-      const dir = vec.normalize(vec.sub(nodeB, nodeA));
-      const perp = vec.perpendicular(dir);
-      const halfThickness = wall.thicknessMm / 2;
-
-      const startLeft = worldToScreen(vec.add(nodeA, vec.scale(perp, halfThickness)), viewport);
-      const startRight = worldToScreen(vec.sub(nodeA, vec.scale(perp, halfThickness)), viewport);
-      const endLeft = worldToScreen(vec.add(nodeB, vec.scale(perp, halfThickness)), viewport);
-      const endRight = worldToScreen(vec.sub(nodeB, vec.scale(perp, halfThickness)), viewport);
-
-      const polygon = [
-        startLeft.x, startLeft.y,
-        endLeft.x, endLeft.y,
-        endRight.x, endRight.y,
-        startRight.x, startRight.y,
-      ];
+      // Centerline (for visual reference)
+      const a = worldToScreen(nodeA, viewport);
+      const b = worldToScreen(nodeB, viewport);
+      const centerline = [a.x, a.y, b.x, b.y];
 
       shapes.push({
         key: wall.id,
         polygon,
-        centerline: [a.x, a.y, b.x, b.y],
+        centerline,
         nodeA: a,
         nodeB: b,
         isSelected: selectedWallIds.has(wall.id),
-        isHovered: wall.id === hoveredWallId,
+        isHovered: hoveredWallId === wall.id,
       });
     }
 
     return { shapes, nodeRadiusPx };
-  }, [scene.nodes, scene.walls, viewport, selectedWallIds, hoveredWallId]);
+  }, [viewport, scene, selectedWallIds, hoveredWallId]);
 
   return (
-    <Layer listening={false}>
+    <Layer>
       {wallShapes.shapes.map((shape) => (
         <React.Fragment key={shape.key}>
-          {/* Wall polygon */}
+          {/* Wall polygon with mitered corners */}
           <Line
             points={shape.polygon}
             closed
-            fill={shape.isSelected ? '#93c5fd' : shape.isHovered ? '#dbeafe' : '#cccccc'}
+            fill={shape.isSelected ? '#dbeafe' : shape.isHovered ? '#eff6ff' : '#f3f4f6'}
             stroke={shape.isSelected ? '#2563eb' : shape.isHovered ? '#3b82f6' : '#333333'}
             strokeWidth={shape.isSelected ? 2 : shape.isHovered ? 2 : 1}
             listening={false}
