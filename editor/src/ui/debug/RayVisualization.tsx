@@ -21,16 +21,35 @@ function RayVisualizationComponent() {
   const [hoveredRay, setHoveredRay] = useState<Ray | null>(null);
   const [hoveredVertex, setHoveredVertex] = useState<{ index: number; point: Vec2; wallId: string } | null>(null);
   const [cursorPx, setCursorPx] = useState<Vec2 | null>(null);
+  const [debugEnabled, setDebugEnabled] = useState(false);
+
+  // ✅ Listen for debug toggle (same key combo as DebugOverlay)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'd') {
+        e.preventDefault();
+        setDebugEnabled((prev) => !prev);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // Track cursor for ray hover detection
   useEffect(() => {
+    if (!debugEnabled) return;
+
     const handleMouseMove = (e: MouseEvent) => {
       setCursorPx({ x: e.clientX, y: e.clientY - 48 }); // Subtract header height
     };
 
     window.addEventListener('mousemove', handleMouseMove);
     return () => window.removeEventListener('mousemove', handleMouseMove);
-  }, []);
+  }, [debugEnabled]);
+
+  // ✅ Don't render anything if debug is disabled
+  if (!debugEnabled) return <Layer listening={false} />;
 
   const selectedWallId = selectedWallIds.size === 1 ? Array.from(selectedWallIds)[0] : null;
   const selectedWall = selectedWallId ? scene.walls.get(selectedWallId) : null;

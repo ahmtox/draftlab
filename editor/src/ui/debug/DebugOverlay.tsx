@@ -36,6 +36,7 @@ export function DebugOverlay() {
     return () => window.removeEventListener('mousemove', handleMouseMove);
   }, [enabled]);
 
+  // ✅ Don't render anything if disabled
   if (!enabled) return null;
 
   const cursorMm = cursorPx ? screenToWorld(cursorPx, viewport) : null;
@@ -58,7 +59,10 @@ export function DebugOverlay() {
   };
 
   return (
-    <div className="fixed top-16 left-4 z-50 bg-black/90 text-white p-4 rounded-lg font-mono text-xs max-w-md shadow-2xl border border-gray-700">
+    <div 
+      className="fixed top-16 left-4 z-50 bg-black/90 text-white p-4 rounded-lg font-mono text-xs max-w-md shadow-2xl border border-gray-700"
+      style={{ pointerEvents: 'auto' }} // ✅ Only overlay itself receives pointer events
+    >
       <div className="flex items-center justify-between mb-3 pb-2 border-b border-gray-600">
         <h3 className="font-bold text-sm">Debug Overlay</h3>
         <span className="text-gray-400 text-[10px]">Ctrl+Shift+D to toggle</span>
@@ -124,7 +128,7 @@ export function DebugOverlay() {
                 </div>
               </div>
             </div>
-            
+
             <div className="mt-2 text-orange-400 font-semibold">
               Polygon Points ({polygonPoints.length}):
             </div>

@@ -6,8 +6,8 @@ import { screenToWorld, worldToScreen } from '../renderers/konva/viewport';
 import { findSnapCandidate } from '../core/geometry/snapping';
 import { hitTestWallNode, hitTestWalls } from '../core/geometry/hit-testing';
 import * as vec from '../core/math/vec';
+import { NODE_RADIUS_MM } from '../core/constants'; // ✅ Import the visual node radius
 
-const NODE_RADIUS_MM = 8;
 const MIN_MARQUEE_SIZE_PX = 5;
 const MIN_DRAG_DISTANCE_PX = 3;
 
@@ -26,9 +26,7 @@ export type SelectToolContext = {
   snapCandidateB: SnapCandidate | null;
   marqueeStart: Vec2 | null;
   marqueeCurrent: Vec2 | null;
-  // Map of nodeId -> snap target nodeId for visual feedback
   activeSnaps: Map<string, string>;
-  // Array of snap candidates for visual guides
   snapCandidates: SnapCandidate[];
 };
 
@@ -64,16 +62,52 @@ export class SelectTool {
 
   handlePointerDown(screenPx: Vec2, scene: Scene, viewport: Viewport, modifiers: { ctrlKey: boolean; shiftKey: boolean }): void {
     const worldPos = screenToWorld(screenPx, viewport);
-    const nodeRadiusMm = NODE_RADIUS_MM;
-    const hitRadiusMm = 20 / viewport.scale;
+    
+    // ✅ Use the same radius as the visual node circles (world-space constant)
+    const nodeRadiusMm = NODE_RADIUS_MM; // 30mm in world space
+    const wallHitRadiusMm = 20 / viewport.scale;
 
-    const hitWallId = hitTestWalls(worldPos, scene, hitRadiusMm);
+    const hitWallId = hitTestWalls(worldPos, scene, wallHitRadiusMm);
 
     if (hitWallId) {
       const isSelectedWall = this.context.selectedWallIds.has(hitWallId);
 
       if (isSelectedWall) {
+        // ✅ FIX: Check for node hit FIRST, then decide behavior
         const hitResult = hitTestWallNode(worldPos, hitWallId, scene, nodeRadiusMm);
+        
+        // If single wall selected and clicking on a node → single-node resize mode
+        if (this.context.selectedWallIds.size === 1 && (hitResult === 'node-a' || hitResult === 'node-b')) {
+          const wall = scene.walls.get(hitWallId)!;
+          const nodeA = scene.nodes.get(wall.nodeAId)!;
+          const nodeB = scene.nodes.get(wall.nodeBId)!;
+
+          // ✅ Use the dragged node's position as drag start (not cursor position)
+          const draggedNode = hitResult === 'node-a' ? nodeA : nodeB;
+
+          this.originalSceneSnapshot = {
+            nodes: new Map(scene.nodes),
+            walls: new Map(scene.walls),
+          };
+
+          this.originalNodePositions.clear();
+          this.originalNodePositions.set(wall.nodeAId, { x: nodeA.x, y: nodeA.y });
+          this.originalNodePositions.set(wall.nodeBId, { x: nodeB.x, y: nodeB.y });
+
+          this.context = {
+            ...this.context,
+            state: 'dragging',
+            dragMode: hitResult as DragMode, // ✅ 'node-a' or 'node-b'
+            dragStartMm: { x: draggedNode.x, y: draggedNode.y }, // ✅ Start from node position
+            activeSnaps: new Map(),
+            snapCandidates: [],
+          };
+
+          this.onStateChange(this.context);
+          return;
+        }
+
+        // Otherwise, multi-wall drag (or whole-wall drag)
         const dragMode = (hitResult === 'node-a' || hitResult === 'node-b' || hitResult === 'wall') 
           ? hitResult as DragMode 
           : 'wall';
@@ -96,6 +130,18 @@ export class SelectTool {
         const nodeA = scene.nodes.get(wall.nodeAId)!;
         const nodeB = scene.nodes.get(wall.nodeBId)!;
 
+        // Check if clicking on a specific node
+        const hitResult = hitTestWallNode(worldPos, hitWallId, scene, nodeRadiusMm);
+        const dragMode = (hitResult === 'node-a' || hitResult === 'node-b') ? hitResult as DragMode : 'wall';
+
+        // ✅ For single-node drag on newly selected wall, also use node position
+        let dragStart = worldPos;
+        if (dragMode === 'node-a') {
+          dragStart = { x: nodeA.x, y: nodeA.y };
+        } else if (dragMode === 'node-b') {
+          dragStart = { x: nodeB.x, y: nodeB.y };
+        }
+
         this.originalSceneSnapshot = {
           nodes: new Map(scene.nodes),
           walls: new Map(scene.walls),
@@ -109,8 +155,8 @@ export class SelectTool {
           ...this.context,
           state: 'dragging',
           selectedWallIds: new Set([hitWallId]),
-          dragMode: 'wall',
-          dragStartMm: { x: worldPos.x, y: worldPos.y },
+          dragMode,
+          dragStartMm: dragStart, // ✅ Use calculated drag start
           offsetAMm: vec.sub(nodeA, worldPos),
           offsetBMm: vec.sub(nodeB, worldPos),
         };
@@ -177,34 +223,29 @@ export class SelectTool {
    * 2. All nodes from walls that share ANY node with selected walls (connected walls)
    */
   private getExcludedNodeIds(scene: Scene): Set<string> {
-    const excludedNodes = new Set<string>();
-    const selectedNodeIds = new Set<string>();
+    const excluded = new Set<string>();
 
-    // First pass: collect all nodes from selected walls
+    // Add all nodes from selected walls
     for (const wallId of this.context.selectedWallIds) {
       const wall = scene.walls.get(wallId);
-      if (wall) {
-        selectedNodeIds.add(wall.nodeAId);
-        selectedNodeIds.add(wall.nodeBId);
-        excludedNodes.add(wall.nodeAId);
-        excludedNodes.add(wall.nodeBId);
+      if (!wall) continue;
+
+      excluded.add(wall.nodeAId);
+      excluded.add(wall.nodeBId);
+    }
+
+    // Add nodes from connected walls
+    const connectedNodeIds = new Set(excluded);
+    for (const nodeId of connectedNodeIds) {
+      for (const wall of scene.walls.values()) {
+        if (wall.nodeAId === nodeId || wall.nodeBId === nodeId) {
+          excluded.add(wall.nodeAId);
+          excluded.add(wall.nodeBId);
+        }
       }
     }
 
-    // Second pass: find all walls that share nodes with selected walls
-    // and exclude their nodes too
-    for (const wall of scene.walls.values()) {
-      // Skip if this wall is already selected
-      if (this.context.selectedWallIds.has(wall.id)) continue;
-
-      // If this wall shares ANY node with selected walls, exclude both its nodes
-      if (selectedNodeIds.has(wall.nodeAId) || selectedNodeIds.has(wall.nodeBId)) {
-        excludedNodes.add(wall.nodeAId);
-        excludedNodes.add(wall.nodeBId);
-      }
-    }
-
-    return excludedNodes;
+    return excluded;
   }
 
   /**
@@ -214,42 +255,37 @@ export class SelectTool {
    * 2. All walls that share ANY node with selected walls (connected walls)
    */
   private getExcludedWallIds(scene: Scene): Set<string> {
-    const excludedWalls = new Set<string>(this.context.selectedWallIds);
-    const selectedNodeIds = new Set<string>();
+    const excluded = new Set<string>(this.context.selectedWallIds);
 
-    // Collect all nodes from selected walls
+    // Get all nodes from selected walls
+    const selectedNodeIds = new Set<string>();
     for (const wallId of this.context.selectedWallIds) {
       const wall = scene.walls.get(wallId);
-      if (wall) {
-        selectedNodeIds.add(wall.nodeAId);
-        selectedNodeIds.add(wall.nodeBId);
-      }
+      if (!wall) continue;
+      selectedNodeIds.add(wall.nodeAId);
+      selectedNodeIds.add(wall.nodeBId);
     }
 
-    // Find all walls that share nodes with selected walls and exclude them
+    // Exclude walls that share any node with selected walls
     for (const wall of scene.walls.values()) {
-      if (excludedWalls.has(wall.id)) continue;
-
       if (selectedNodeIds.has(wall.nodeAId) || selectedNodeIds.has(wall.nodeBId)) {
-        excludedWalls.add(wall.id);
+        excluded.add(wall.id);
       }
     }
 
-    return excludedWalls;
+    return excluded;
   }
 
   handlePointerMove(screenPx: Vec2, scene: Scene, viewport: Viewport): void {
     const worldPos = screenToWorld(screenPx, viewport);
 
     if (this.context.state === 'marquee-pending') {
-      if (!this.context.marqueeStart) return;
+      const startScreen = this.context.marqueeStart!;
+      const dx = screenPx.x - startScreen.x;
+      const dy = screenPx.y - startScreen.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
 
-      const dragDistance = Math.sqrt(
-        Math.pow(screenPx.x - this.context.marqueeStart.x, 2) +
-        Math.pow(screenPx.y - this.context.marqueeStart.y, 2)
-      );
-
-      if (dragDistance >= MIN_DRAG_DISTANCE_PX) {
+      if (distance > MIN_DRAG_DISTANCE_PX) {
         this.context = {
           ...this.context,
           state: 'marquee',
@@ -262,9 +298,9 @@ export class SelectTool {
         ...this.context,
         marqueeCurrent: { x: screenPx.x, y: screenPx.y },
       };
-      
       this.onStateChange(this.context);
     } else if (this.context.state === 'dragging' && this.context.selectedWallIds.size > 0) {
+      // Calculate delta from drag start (which is now the node's original position for single-node mode)
       const delta = vec.sub(worldPos, this.context.dragStartMm!);
       const newNodePositions = new Map<string, Vec2>();
       const activeSnaps = new Map<string, string>();
@@ -283,7 +319,65 @@ export class SelectTool {
         ),
       };
 
-      // Calculate new positions with snapping
+      // Handle single-node drag (node-a or node-b mode)
+      if (this.context.dragMode === 'node-a' || this.context.dragMode === 'node-b') {
+        const singleWallId = Array.from(this.context.selectedWallIds)[0];
+        const wall = scene.walls.get(singleWallId);
+        
+        if (wall) {
+          const dragNodeId = this.context.dragMode === 'node-a' ? wall.nodeAId : wall.nodeBId;
+          const anchorNodeId = this.context.dragMode === 'node-a' ? wall.nodeBId : wall.nodeAId;
+          
+          // Get original position of the dragged node
+          const originalDragPos = this.originalNodePositions.get(dragNodeId)!;
+          
+          // Calculate new position (original + delta)
+          const tentativePos = vec.add(originalDragPos, delta);
+
+          // Apply snapping
+          const tentativeScreenPx = worldToScreen(tentativePos, viewport);
+          
+          const snapResult = findSnapCandidate(
+            tentativeScreenPx,
+            filteredScene,
+            viewport,
+            {
+              snapToGrid: true,
+              snapToNodes: true,
+              snapToEdges: true,
+              excludeNodeIds: excludedNodeIds,
+            }
+          );
+
+          const finalDragPos = snapResult.snapped ? snapResult.point : tentativePos;
+
+          // Track snap for visual feedback
+          if (snapResult.snapped && snapResult.candidate) {
+            if (snapResult.candidate.type === 'node' && snapResult.candidate.entityId) {
+              activeSnaps.set(dragNodeId, snapResult.candidate.entityId);
+            }
+            snapCandidates.push(snapResult.candidate);
+          }
+
+          // Only move the dragged node, keep anchor fixed
+          const finalPositions = new Map<string, Vec2>();
+          finalPositions.set(dragNodeId, finalDragPos);
+          finalPositions.set(anchorNodeId, this.originalNodePositions.get(anchorNodeId)!);
+          
+          this.context = {
+            ...this.context,
+            dragCurrentMm: worldPos,
+            activeSnaps,
+            snapCandidates,
+          };
+
+          this.onDragUpdate(this.context.selectedWallIds, finalPositions);
+          this.onStateChange(this.context);
+          return;
+        }
+      }
+
+      // Multi-wall or whole-wall drag: move all nodes together
       for (const [nodeId, originalPos] of this.originalNodePositions) {
         const tentativePos = vec.add(originalPos, delta);
 
@@ -292,12 +386,12 @@ export class SelectTool {
         
         const snapResult = findSnapCandidate(
           tentativeScreenPx,
-          filteredScene, // ✅ Use filtered scene without excluded walls
+          filteredScene,
           viewport,
           {
             snapToGrid: true,
             snapToNodes: true,
-            snapToEdges: true, // Now only considers non-excluded walls
+            snapToEdges: true,
             excludeNodeIds: excludedNodeIds,
           }
         );
@@ -306,33 +400,25 @@ export class SelectTool {
           // Use snapped position (works for ALL snap types)
           newNodePositions.set(nodeId, snapResult.point);
           
-          // Track node merges ONLY for node-to-node snaps
+          // Track snap for visual feedback
           if (snapResult.candidate.type === 'node' && snapResult.candidate.entityId) {
             activeSnaps.set(nodeId, snapResult.candidate.entityId);
           }
-
-          // Add snap candidate for visual feedback (all types)
-          snapCandidates.push({
-            point: snapResult.point,
-            type: snapResult.candidate.type,
-            entityId: snapResult.candidate.entityId,
-            priority: snapResult.candidate.priority,
-            distancePx: snapResult.candidate.distancePx,
-          });
+          
+          snapCandidates.push(snapResult.candidate);
         } else {
-          // No snap, use tentative position
+          // No snap - use tentative position
           newNodePositions.set(nodeId, tentativePos);
         }
       }
 
-      // Update context with active snaps and snap candidates
       this.context = {
         ...this.context,
+        dragCurrentMm: worldPos,
         activeSnaps,
         snapCandidates,
       };
 
-      // Live preview
       this.onDragUpdate(this.context.selectedWallIds, newNodePositions);
       this.onStateChange(this.context);
     } else if (this.context.state === 'idle') {
@@ -419,141 +505,172 @@ export class SelectTool {
         ),
       };
 
-      // Calculate final positions and detect merges
-      for (const [nodeId, originalPos] of this.originalNodePositions) {
-        const tentativePos = vec.add(originalPos, delta);
-
-        // Use findSnapCandidate for final merge detection with filtered scene
-        const tentativeScreenPx = worldToScreen(tentativePos, viewport);
+      // Handle single-node drag: only record position for dragged node
+      if (this.context.dragMode === 'node-a' || this.context.dragMode === 'node-b') {
+        const singleWallId = Array.from(this.context.selectedWallIds)[0];
+        const wall = scene.walls.get(singleWallId);
         
-        const snapResult = findSnapCandidate(
-          tentativeScreenPx,
-          filteredScene, // ✅ Use filtered scene without excluded walls
-          viewport,
-          {
-            snapToGrid: true,
-            snapToNodes: true,
-            snapToEdges: true,
-            excludeNodeIds: excludedNodeIds,
-          }
-        );
-
-        if (snapResult.snapped && snapResult.candidate) {
-          // Use snapped position
-          nodePositions.set(nodeId, {
-            original: originalPos,
-            final: snapResult.point,
-          });
+        if (wall) {
+          const dragNodeId = this.context.dragMode === 'node-a' ? wall.nodeAId : wall.nodeBId;
+          const originalDragPos = this.originalNodePositions.get(dragNodeId)!;
           
-          // Only merge if snapped to another node
-          if (snapResult.candidate.type === 'node' && snapResult.candidate.entityId) {
-            mergeTargets.set(nodeId, snapResult.candidate.entityId);
+          // Calculate final position
+          const tentativePos = vec.add(originalDragPos, delta);
+          const tentativeScreenPx = worldToScreen(tentativePos, viewport);
+          
+          const snapResult = findSnapCandidate(
+            tentativeScreenPx,
+            filteredScene,
+            viewport,
+            {
+              snapToGrid: true,
+              snapToNodes: true,
+              snapToEdges: true,
+              excludeNodeIds: excludedNodeIds,
+            }
+          );
+
+          let finalPos = tentativePos;
+
+          // Check if snapped to another node (merge candidate)
+          if (snapResult.snapped && snapResult.candidate?.type === 'node' && snapResult.candidate.entityId) {
+            const targetNodeId = snapResult.candidate.entityId;
+            
+            // Only merge if target is not in excluded nodes
+            if (!excludedNodeIds.has(targetNodeId) && targetNodeId !== dragNodeId) {
+              mergeTargets.set(dragNodeId, targetNodeId);
+              finalPos = snapResult.point;
+            } else {
+              finalPos = snapResult.point;
+            }
+          } else if (snapResult.snapped) {
+            finalPos = snapResult.point;
           }
-        } else {
-          // No snap, just move
-          nodePositions.set(nodeId, {
-            original: originalPos,
-            final: tentativePos,
-          });
+
+          // Only record the dragged node's movement
+          nodePositions.set(dragNodeId, { original: originalDragPos, final: finalPos });
+        }
+      } else {
+        // Multi-wall or whole-wall drag: record all node movements
+        for (const [nodeId, originalPos] of this.originalNodePositions) {
+          const tentativePos = vec.add(originalPos, delta);
+          const tentativeScreenPx = worldToScreen(tentativePos, viewport);
+          
+          const snapResult = findSnapCandidate(
+            tentativeScreenPx,
+            filteredScene,
+            viewport,
+            {
+              snapToGrid: true,
+              snapToNodes: true,
+              snapToEdges: true,
+              excludeNodeIds: excludedNodeIds,
+            }
+          );
+
+          let finalPos = tentativePos;
+
+          // Check if snapped to another node (merge candidate)
+          if (snapResult.snapped && snapResult.candidate?.type === 'node' && snapResult.candidate.entityId) {
+            const targetNodeId = snapResult.candidate.entityId;
+            
+            // Only merge if target is not in excluded nodes
+            if (!excludedNodeIds.has(targetNodeId) && targetNodeId !== nodeId) {
+              mergeTargets.set(nodeId, targetNodeId);
+              finalPos = snapResult.point;
+            } else {
+              finalPos = snapResult.point;
+            }
+          } else if (snapResult.snapped) {
+            finalPos = snapResult.point;
+          }
+
+          nodePositions.set(nodeId, { original: originalPos, final: finalPos });
         }
       }
 
+      // Commit the drag
       this.onDragCommit(nodePositions, mergeTargets);
 
       this.context = {
         ...this.context,
         state: 'idle',
         dragMode: null,
+        dragStartMm: null,
+        dragCurrentMm: null,
+        offsetAMm: null,
+        offsetBMm: null,
+        snapCandidateA: null,
+        snapCandidateB: null,
         activeSnaps: new Map(),
         snapCandidates: [],
       };
+
+      this.originalSceneSnapshot = null;
+      this.originalNodePositions.clear();
+
       this.onStateChange(this.context);
-    } else {
-      this.reset();
     }
   }
 
   private getMarqueeBox(): { x: number; y: number; width: number; height: number } | null {
     if (!this.context.marqueeStart || !this.context.marqueeCurrent) return null;
 
-    const x = Math.min(this.context.marqueeStart.x, this.context.marqueeCurrent.x);
-    const y = Math.min(this.context.marqueeStart.y, this.context.marqueeCurrent.y);
-    const width = Math.abs(this.context.marqueeCurrent.x - this.context.marqueeStart.x);
-    const height = Math.abs(this.context.marqueeCurrent.y - this.context.marqueeStart.y);
+    const start = this.context.marqueeStart;
+    const current = this.context.marqueeCurrent;
+
+    const x = Math.min(start.x, current.x);
+    const y = Math.min(start.y, current.y);
+    const width = Math.abs(current.x - start.x);
+    const height = Math.abs(current.y - start.y);
+
+    if (width < MIN_MARQUEE_SIZE_PX || height < MIN_MARQUEE_SIZE_PX) {
+      return null;
+    }
 
     return { x, y, width, height };
   }
 
   private isPointInBox(point: Vec2, box: { x: number; y: number; width: number; height: number }): boolean {
-    return point.x >= box.x && point.x <= box.x + box.width &&
-           point.y >= box.y && point.y <= box.y + box.height;
+    return point.x >= box.x && 
+           point.x <= box.x + box.width && 
+           point.y >= box.y && 
+           point.y <= box.y + box.height;
   }
 
   private lineSegmentIntersectsRect(
-    p1: Vec2,
-    p2: Vec2,
+    a: Vec2,
+    b: Vec2,
     rect: { x: number; y: number; width: number; height: number }
   ): boolean {
-    const lineMinX = Math.min(p1.x, p2.x);
-    const lineMaxX = Math.max(p1.x, p2.x);
-    const lineMinY = Math.min(p1.y, p2.y);
-    const lineMaxY = Math.max(p1.y, p2.y);
+    const rectLeft = rect.x;
+    const rectRight = rect.x + rect.width;
+    const rectTop = rect.y;
+    const rectBottom = rect.y + rect.height;
 
-    const rectMaxX = rect.x + rect.width;
-    const rectMaxY = rect.y + rect.height;
+    const lineSegmentIntersectsLine = (
+      p1: Vec2, p2: Vec2, p3: Vec2, p4: Vec2
+    ): boolean => {
+      const denominator = (p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y);
+      if (Math.abs(denominator) < 1e-10) return false;
 
-    if (lineMaxX < rect.x || lineMinX > rectMaxX || 
-        lineMaxY < rect.y || lineMinY > rectMaxY) {
-      return false;
-    }
+      const ua = ((p4.x - p3.x) * (p1.y - p3.y) - (p4.y - p3.y) * (p1.x - p3.x)) / denominator;
+      const ub = ((p2.x - p1.x) * (p1.y - p3.y) - (p2.y - p1.y) * (p1.x - p3.x)) / denominator;
 
-    const edges = [
-      { start: { x: rect.x, y: rect.y }, end: { x: rectMaxX, y: rect.y } },
-      { start: { x: rectMaxX, y: rect.y }, end: { x: rectMaxX, y: rectMaxY } },
-      { start: { x: rectMaxX, y: rectMaxY }, end: { x: rect.x, y: rectMaxY } },
-      { start: { x: rect.x, y: rectMaxY }, end: { x: rect.x, y: rect.y } },
-    ];
+      return ua >= 0 && ua <= 1 && ub >= 0 && ub <= 1;
+    };
 
-    for (const edge of edges) {
-      if (this.lineSegmentsIntersect(p1, p2, edge.start, edge.end)) {
-        return true;
-      }
-    }
+    const topLeft = { x: rectLeft, y: rectTop };
+    const topRight = { x: rectRight, y: rectTop };
+    const bottomLeft = { x: rectLeft, y: rectBottom };
+    const bottomRight = { x: rectRight, y: rectBottom };
 
-    return false;
-  }
-
-  private lineSegmentsIntersect(
-    p1: Vec2,
-    p2: Vec2,
-    p3: Vec2,
-    p4: Vec2
-  ): boolean {
-    const d1 = this.direction(p3, p4, p1);
-    const d2 = this.direction(p3, p4, p2);
-    const d3 = this.direction(p1, p2, p3);
-    const d4 = this.direction(p1, p2, p4);
-
-    if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
-        ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
-      return true;
-    }
-
-    if (d1 === 0 && this.onSegment(p3, p1, p4)) return true;
-    if (d2 === 0 && this.onSegment(p3, p2, p4)) return true;
-    if (d3 === 0 && this.onSegment(p1, p3, p2)) return true;
-    if (d4 === 0 && this.onSegment(p1, p4, p2)) return true;
-
-    return false;
-  }
-
-  private direction(p1: Vec2, p2: Vec2, p3: Vec2): number {
-    return (p3.x - p1.x) * (p2.y - p1.y) - (p2.x - p1.x) * (p3.y - p1.y);
-  }
-
-  private onSegment(p: Vec2, q: Vec2, r: Vec2): boolean {
-    return q.x <= Math.max(p.x, r.x) && q.x >= Math.min(p.x, r.x) &&
-           q.y <= Math.max(p.y, r.y) && q.y >= Math.min(p.y, r.y);
+    return (
+      lineSegmentIntersectsLine(a, b, topLeft, topRight) ||
+      lineSegmentIntersectsLine(a, b, topRight, bottomRight) ||
+      lineSegmentIntersectsLine(a, b, bottomRight, bottomLeft) ||
+      lineSegmentIntersectsLine(a, b, bottomLeft, topLeft)
+    );
   }
 
   reset(): void {
