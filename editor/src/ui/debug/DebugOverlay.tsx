@@ -60,9 +60,27 @@ export function DebugOverlay() {
 
   return (
     <div 
-      className="fixed top-16 left-4 z-50 bg-black/90 text-white p-4 rounded-lg font-mono text-xs max-w-md shadow-2xl border border-gray-700"
+      className="fixed top-16 left-4 z-50 bg-black/90 text-white p-4 rounded-lg font-mono text-xs max-w-md shadow-2xl border border-gray-700 max-h-[calc(100vh-5rem)] overflow-y-auto"
       style={{ pointerEvents: 'auto' }} // ✅ Only overlay itself receives pointer events
     >
+      {/* Scrollbar styling */}
+      <style>{`
+        .fixed.top-16::-webkit-scrollbar {
+          width: 8px;
+        }
+        .fixed.top-16::-webkit-scrollbar-track {
+          background: rgba(0, 0, 0, 0.3);
+          border-radius: 4px;
+        }
+        .fixed.top-16::-webkit-scrollbar-thumb {
+          background: rgba(255, 255, 255, 0.3);
+          border-radius: 4px;
+        }
+        .fixed.top-16::-webkit-scrollbar-thumb:hover {
+          background: rgba(255, 255, 255, 0.5);
+        }
+      `}</style>
+
       <div className="flex items-center justify-between mb-3 pb-2 border-b border-gray-600">
         <h3 className="font-bold text-sm">Debug Overlay</h3>
         <span className="text-gray-400 text-[10px]">Ctrl+Shift+D to toggle</span>
@@ -167,6 +185,7 @@ export function DebugOverlay() {
       {/* Instructions */}
       <div className="mt-4 pt-3 border-t border-gray-700">
         <div className="text-gray-400 text-[10px] space-y-1">
+          <div>💡 <span className="text-gray-300">Select a wall</span> to see detailed miter info</div>
           <div>💡 <span className="text-gray-300">Hover over orange vertices</span> to see wall info</div>
           <div>💡 <span className="text-gray-300">Hover over ray origins</span> to see ray details</div>
         </div>
