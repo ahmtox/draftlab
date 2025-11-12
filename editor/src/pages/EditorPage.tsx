@@ -9,6 +9,7 @@ import { HeaderBar } from '../ui/chrome/HeaderBar';
 import { Sidebar } from '../ui/panels/Sidebar';
 import { WallProperties } from '../ui/panels/WallProperties';
 import { ViewModeToggle } from '../ui/chrome/ViewModeToggle';
+import { DebugOverlay } from '../ui/debug/DebugOverlay';
 
 export function EditorPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -189,6 +190,7 @@ export function EditorPage() {
       <Sidebar />
       <WallProperties />
       <ViewModeToggle />
+      <DebugOverlay />
       
       <div className="absolute top-12 left-0 right-0 bottom-0">
         {viewMode === '2D' ? <Stage /> : <Scene3D />}

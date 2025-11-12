@@ -1,11 +1,12 @@
 /**
  * Wall mitering system for clean corner joins
  * 
- * Algorithm:
- * 1. At each node, sort incident walls by angle (CCW)
- * 2. For each adjacent pair (Wi → Wj), intersect Wi's left edge with Wj's right edge
- * 3. Assign intersection points as corners for each wall's polygon
- * 4. Optionally compute apex points for 3+ wall junctions
+ * New Algorithm (Segment-Intersection Based):
+ * 1. For each node, find all incident walls and compute their offset edges
+ * 2. Test finite segment intersections between offset edges
+ * 3. For each edge, collect ALL intersections and choose the farthest valid one
+ * 4. For edges that don't intersect, extend to infinite lines and find intersection
+ * 5. Create apex vertices when both edges of a wall intersect other walls
  */
 
 import type { Vec2 } from '../math/vec';
@@ -16,7 +17,7 @@ import * as vec from '../math/vec';
 // Configuration
 // ============================================================================
 
-const DEBUG = true;
+const DEBUG = false;
 const EPSILON = 1e-9;
 const MAX_MITER_LENGTH_RATIO = 10; // Prevent infinite spikes at shallow angles
 
@@ -50,10 +51,6 @@ const formatWallId = (id: string): string => {
   return id.slice(-5);
 };
 
-const toDegrees = (radians: number): number => {
-  return (radians * 180) / Math.PI;
-};
-
 // ============================================================================
 // Math Utilities
 // ============================================================================
@@ -80,99 +77,73 @@ function almostEqual(a: Vec2, b: Vec2, epsilon = 1e-6): boolean {
 }
 
 // ============================================================================
-// Wall Geometry
+// Segment & Line Intersection
 // ============================================================================
 
 /**
- * Wall coordinate frame (A → B orientation)
+ * Line segment with two endpoints
  */
-interface WallFrame {
-  A: Node;
-  B: Node;
-  dirAB: Vec2;      // Unit vector from A to B
-  leftOfAB: Vec2;   // Perpendicular to the left (CCW)
-}
-
-function getWallFrame(wall: Wall, scene: Scene): WallFrame {
-  const A = scene.nodes.get(wall.nodeAId)!;
-  const B = scene.nodes.get(wall.nodeBId)!;
-  
-  const dirAB = vec.normalize(vec.sub(B, A));
-  const leftOfAB = perpCCW(dirAB);
-  
-  return { A, B, dirAB, leftOfAB };
+interface Segment {
+  start: Vec2;
+  end: Vec2;
 }
 
 /**
- * Get direction pointing away from node along wall
+ * Infinite line (point + direction)
  */
-function getAwayDirection(node: Node, wall: Wall, scene: Scene): Vec2 {
-  const { dirAB } = getWallFrame(wall, scene);
-  return node.id === wall.nodeAId ? dirAB : vec.scale(dirAB, -1);
-}
-
-/**
- * Get angle of wall direction pointing away from node (0 to 2π)
- */
-function getAwayAngle(wall: Wall, node: Node, scene: Scene): number {
-  const dir = getAwayDirection(node, wall, scene);
-  const angle = Math.atan2(dir.y, dir.x);
-  return angle < 0 ? angle + 2 * Math.PI : angle;
-}
-
-// ============================================================================
-// Ray Intersection
-// ============================================================================
-
-/**
- * Half-infinite ray (origin + direction)
- */
-interface Ray {
-  origin: Vec2;
+interface Line {
+  point: Vec2;
   direction: Vec2;
 }
 
 /**
- * Get offset ray for a wall at a node
- * @param side - 'left' for CCW side, 'right' for CW side
+ * Intersect two finite line segments
+ * Returns intersection point if segments intersect within their bounds
  */
-function getOffsetRay(
-  wall: Wall,
-  node: Node,
-  side: 'left' | 'right',
-  scene: Scene
-): Ray {
-  const dir = getAwayDirection(node, wall, scene);
-  const normal = side === 'left' ? perpCCW(dir) : vec.scale(perpCCW(dir), -1);
-  const offset = wall.thicknessMm / 2;
-  
-  return {
-    origin: vec.add(node, vec.scale(normal, offset)),
-    direction: dir,
-  };
-}
+function intersectSegments(seg1: Segment, seg2: Segment): Vec2 | null {
+  const p1 = seg1.start;
+  const p2 = seg1.end;
+  const p3 = seg2.start;
+  const p4 = seg2.end;
 
-/**
- * Intersect two rays (returns null if parallel or intersection is behind origins)
- */
-function intersectRays(ray1: Ray, ray2: Ray): Vec2 | null {
-  const denominator = cross(ray1.direction, ray2.direction);
-  
-  // Check if parallel
+  const d1 = vec.sub(p2, p1);
+  const d2 = vec.sub(p4, p3);
+
+  const denominator = cross(d1, d2);
+
+  // Parallel or coincident
   if (Math.abs(denominator) < EPSILON) {
     return null;
   }
-  
-  const originDelta = vec.sub(ray2.origin, ray1.origin);
-  const t = cross(originDelta, ray2.direction) / denominator;
-  const u = cross(originDelta, ray1.direction) / denominator;
-  
-  // Reject if intersection is behind either ray origin
-  if (t < 0 || u < 0) {
+
+  const delta = vec.sub(p3, p1);
+  const t1 = cross(delta, d2) / denominator;
+  const t2 = cross(delta, d1) / denominator;
+
+  // Check if intersection is within both segments [0, 1]
+  if (t1 >= 0 && t1 <= 1 && t2 >= 0 && t2 <= 1) {
+    return vec.add(p1, vec.scale(d1, t1));
+  }
+
+  return null;
+}
+
+/**
+ * Intersect two infinite lines
+ * Returns intersection point or null if parallel
+ */
+function intersectLines(line1: Line, line2: Line): Vec2 | null {
+  const denominator = cross(line1.direction, line2.direction);
+
+  // Parallel
+  if (Math.abs(denominator) < EPSILON) {
     return null;
   }
-  
-  return vec.add(ray1.origin, vec.scale(ray1.direction, t));
+
+  const delta = vec.sub(line2.point, line1.point);
+  const t = cross(delta, line2.direction) / denominator;
+
+  return vec.add(line1.point, vec.scale(line1.direction, t));
 }
 
 /**
@@ -184,16 +155,60 @@ function clampMiterLength(
   avgThickness: number
 ): Vec2 | null {
   if (!point) return null;
-  
+
   const maxLength = avgThickness * MAX_MITER_LENGTH_RATIO;
   const distance = vec.distance(node, point);
-  
+
   if (distance > maxLength) {
     log.detail(`Clamped: distance ${distance.toFixed(1)}mm > max ${maxLength.toFixed(1)}mm`);
     return null;
   }
-  
+
   return point;
+}
+
+// ============================================================================
+// Wall Edge Geometry
+// ============================================================================
+
+/**
+ * Offset edges for a wall
+ */
+interface WallEdges {
+  wall: Wall;
+  leftEdge: Segment;   // Left side of wall
+  rightEdge: Segment;  // Right side of wall
+}
+
+/**
+ * Get the two offset edges (left and right) for a wall at a specific node
+ */
+function getWallEdgesAtNode(wall: Wall, node: Node, scene: Scene): WallEdges {
+  const nodeA = scene.nodes.get(wall.nodeAId)!;
+  const nodeB = scene.nodes.get(wall.nodeBId)!;
+
+  const isNodeA = node.id === wall.nodeAId;
+  const startNode = isNodeA ? nodeA : nodeB;
+  const endNode = isNodeA ? nodeB : nodeA;
+
+  // Direction pointing AWAY from the node we're computing for
+  const dir = vec.normalize(vec.sub(endNode, startNode));
+  const perp = perpCCW(dir);
+  const halfThickness = wall.thicknessMm / 2;
+
+  // Compute offset points at the node (start of the edge segments)
+  const leftAtNode = vec.add(startNode, vec.scale(perp, halfThickness));
+  const rightAtNode = vec.sub(startNode, vec.scale(perp, halfThickness));
+
+  // Compute offset points at the opposite end (for segment bounds)
+  const leftAtEnd = vec.add(endNode, vec.scale(perp, halfThickness));
+  const rightAtEnd = vec.sub(endNode, vec.scale(perp, halfThickness));
+
+  return {
+    wall,
+    leftEdge: { start: leftAtNode, end: leftAtEnd },
+    rightEdge: { start: rightAtNode, end: rightAtEnd },
+  };
 }
 
 // ============================================================================
@@ -201,174 +216,294 @@ function clampMiterLength(
 // ============================================================================
 
 /**
- * Corner points for a wall at a node
+ * Edge intersection result with distance from node
  */
-interface WallCorners {
-  left: Vec2 | null;   // Intersection of this wall's left edge with next wall's right edge
-  right: Vec2 | null;  // Intersection of previous wall's left edge with this wall's right edge
-  apex: Vec2 | null;   // Optional apex between non-adjacent walls (3+ junction)
+interface EdgeIntersection {
+  wallId: string;
+  edge: 'left' | 'right';
+  point: Vec2;
+  distanceFromNode: number;
 }
 
 /**
- * Compute corner points for all walls meeting at a node
+ * Compute corner points for all walls meeting at a node using segment intersection
+ * FIXED: Now collects ALL intersections per edge and chooses the farthest valid one
  */
-function computeNodeCorners(node: Node, scene: Scene): Map<string, WallCorners> {
+function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, WallCorners> {
   log.section(`Computing Corners for Node ${formatWallId(node.id)}`);
-  
+
   const result = new Map<string, WallCorners>();
-  
+
   // ============================================================
-  // STEP 1: Find incident walls
+  // STEP 1: Find incident walls and compute edges
   // ============================================================
-  log.step(1, 'Finding incident walls');
-  
+  log.step(1, 'Finding incident walls and computing offset edges');
+
   const incidentWalls = [...scene.walls.values()].filter(
     wall => wall.nodeAId === node.id || wall.nodeBId === node.id
   );
-  
-  log.result(`Found ${incidentWalls.length} walls at node ${formatWallId(node.id)}`);
-  
+
   if (incidentWalls.length === 0) {
     return result;
   }
-  
-  // ============================================================
-  // STEP 2: Sort walls by angle (CCW)
-  // ============================================================
-  log.step(2, 'Sorting walls counter-clockwise by away angle');
-  
-  const wallsWithAngles = incidentWalls.map(wall => ({
-    wall,
-    angle: getAwayAngle(wall, node, scene),
-  }));
-  
-  wallsWithAngles.sort((a, b) => a.angle - b.angle);
-  const sortedWalls = wallsWithAngles.map(wa => wa.wall);
-  
-  if (DEBUG) {
-    wallsWithAngles.forEach(({ wall, angle }, i) => {
-      log.substep(
-        `#${i + 1}: Wall ${formatWallId(wall.id)} @ ${toDegrees(angle).toFixed(1)}°`
-      );
-    });
-  }
-  
-  log.result(`Sorted ${sortedWalls.length} walls by angle`);
-  
-  const wallCount = sortedWalls.length;
-  
-  // ============================================================
-  // STEP 3: Compute offset rays
-  // ============================================================
-  log.step(3, 'Computing offset rays (left & right edges)');
-  
-  const leftRays: Ray[] = [];
-  const rightRays: Ray[] = [];
-  
-  for (const wall of sortedWalls) {
-    const leftRay = getOffsetRay(wall, node, 'left', scene);
-    const rightRay = getOffsetRay(wall, node, 'right', scene);
-    
-    leftRays.push(leftRay);
-    rightRays.push(rightRay);
+
+  const wallEdges = incidentWalls.map(wall => getWallEdgesAtNode(wall, node, scene));
+
+  log.result(`Found ${wallEdges.length} walls with offset edges`);
+
+  // Initialize result map
+  for (const { wall } of wallEdges) {
     result.set(wall.id, { left: null, right: null, apex: null });
-    
-    log.substep(
-      `Wall ${formatWallId(wall.id)}:`,
-      `left origin ${formatPoint(leftRay.origin)},`,
-      `right origin ${formatPoint(rightRay.origin)}`
-    );
   }
-  
-  log.result(`Computed ${leftRays.length} left rays and ${rightRays.length} right rays`);
-  
+
   // ============================================================
-  // STEP 4: Compute inner corners (adjacent pairs)
+  // STEP 2: Test ALL segment intersections and collect them
   // ============================================================
-  log.step(4, 'Computing inner corners (Wi.left ∩ Wj.right)');
-  
-  const innerCorners: (Vec2 | null)[] = [];
-  
-  for (let i = 0; i < wallCount; i++) {
-    const nextIndex = (i + 1) % wallCount;
-    const wall = sortedWalls[i];
-    const nextWall = sortedWalls[nextIndex];
-    
-    // Intersect Wi's left edge with Wj's right edge
-    const corner = intersectRays(leftRays[i], rightRays[nextIndex]);
-    innerCorners.push(corner);
-    
-    log.substep(
-      `Pair ${i} → ${nextIndex}:`,
-      `(${formatWallId(wall.id)}) → (${formatWallId(nextWall.id)})`,
-      `= ${formatPoint(corner)}`
-    );
+  log.step(2, 'Testing finite segment intersections (collecting all)');
+
+  // Map to collect ALL intersections per edge: wallId -> edge -> [intersections]
+  const allIntersections = new Map<string, { left: EdgeIntersection[]; right: EdgeIntersection[] }>();
+
+  for (const { wall } of wallEdges) {
+    allIntersections.set(wall.id, { left: [], right: [] });
   }
-  
-  log.result(`Computed ${innerCorners.length} inner corner points`);
-  
-  // ============================================================
-  // STEP 5: Assign corners to each wall
-  // ============================================================
-  log.step(5, 'Assigning corners and apex points to walls');
-  
-  for (let i = 0; i < wallCount; i++) {
-    const wall = sortedWalls[i];
-    const prevIndex = (i - 1 + wallCount) % wallCount;
-    const nextIndex = (i + 1) % wallCount;
-    
-    const prevWall = sortedWalls[prevIndex];
-    const nextWall = sortedWalls[nextIndex];
-    
-    log.substep(`Wall ${formatWallId(wall.id)} (index ${i})`);
-    
-    // This wall's left corner is the inner corner between this wall and next wall
-    let leftCorner = innerCorners[i];
-    log.detail(`Left corner (from pair ${i}→${nextIndex}): ${formatPoint(leftCorner)}`);
-    
-    // This wall's right corner is the inner corner between previous wall and this wall
-    let rightCorner = innerCorners[prevIndex];
-    log.detail(`Right corner (from pair ${prevIndex}→${i}): ${formatPoint(rightCorner)}`);
-    
-    // Optional apex between previous and next walls (for 3+ junctions)
-    let apex = intersectRays(leftRays[prevIndex], rightRays[nextIndex]);
-    log.detail(`Apex candidate (prev.left ∩ next.right): ${formatPoint(apex)}`);
-    
-    // Remove apex if it duplicates a corner
-    if (apex && leftCorner && almostEqual(apex, leftCorner)) {
-      log.detail(`Apex duplicates left corner, removing apex`);
-      apex = null;
+
+  // Test all pairs of walls
+  for (let i = 0; i < wallEdges.length; i++) {
+    const wallA = wallEdges[i];
+
+    for (let j = i + 1; j < wallEdges.length; j++) {
+      const wallB = wallEdges[j];
+
+      // Test all four edge combinations
+      const tests = [
+        { edgeA: wallA.leftEdge, sideA: 'left' as const, edgeB: wallB.leftEdge, sideB: 'left' as const },
+        { edgeA: wallA.leftEdge, sideA: 'left' as const, edgeB: wallB.rightEdge, sideB: 'right' as const },
+        { edgeA: wallA.rightEdge, sideA: 'right' as const, edgeB: wallB.leftEdge, sideB: 'left' as const },
+        { edgeA: wallA.rightEdge, sideA: 'right' as const, edgeB: wallB.rightEdge, sideB: 'right' as const },
+      ];
+
+      for (const { edgeA, sideA, edgeB, sideB } of tests) {
+        const intersection = intersectSegments(edgeA, edgeB);
+
+        if (intersection) {
+          const distA = vec.distance(node, intersection);
+          const distB = vec.distance(node, intersection);
+
+          log.substep(
+            `${formatWallId(wallA.wall.id)}.${sideA} ∩ ${formatWallId(wallB.wall.id)}.${sideB} = ${formatPoint(intersection)} (dist: ${distA.toFixed(1)}mm)`
+          );
+
+          // Add to wall A's intersection list
+          allIntersections.get(wallA.wall.id)![sideA].push({
+            wallId: wallA.wall.id,
+            edge: sideA,
+            point: intersection,
+            distanceFromNode: distA,
+          });
+
+          // Add to wall B's intersection list
+          allIntersections.get(wallB.wall.id)![sideB].push({
+            wallId: wallB.wall.id,
+            edge: sideB,
+            point: intersection,
+            distanceFromNode: distB,
+          });
+        }
+      }
     }
-    if (apex && rightCorner && almostEqual(apex, rightCorner)) {
-      log.detail(`Apex duplicates right corner, removing apex`);
-      apex = null;
-    }
-    
-    // Clamp excessive miters
-    const avgThicknessLeft = (wall.thicknessMm + nextWall.thicknessMm) / 2;
-    const avgThicknessRight = (wall.thicknessMm + prevWall.thicknessMm) / 2;
-    const avgThicknessApex = (prevWall.thicknessMm + nextWall.thicknessMm) / 2;
-    
-    leftCorner = clampMiterLength(node, leftCorner, avgThicknessLeft);
-    rightCorner = clampMiterLength(node, rightCorner, avgThicknessRight);
-    apex = clampMiterLength(node, apex, avgThicknessApex);
-    
-    result.set(wall.id, { 
-      left: leftCorner, 
-      right: rightCorner, 
-      apex 
-    });
-    
-    log.detail(
-      `Final: left=${formatPoint(leftCorner)}, ` +
-      `right=${formatPoint(rightCorner)}, ` +
-      `apex=${formatPoint(apex)}`
-    );
   }
-  
-  log.result(`Assigned corners to all ${wallCount} walls`);
-  
+
+  log.result('All intersections collected');
+
+  // ============================================================
+  // STEP 3: Choose the FARTHEST valid intersection for each edge
+  // ============================================================
+  log.step(3, 'Selecting farthest valid intersection for each edge');
+
+  for (const [wallId, intersections] of allIntersections) {
+    const corners = result.get(wallId)!;
+    const wall = scene.walls.get(wallId)!;
+
+    // Process left edge intersections
+    if (intersections.left.length > 0) {
+      // Sort by distance from node (descending - farthest first)
+      intersections.left.sort((a, b) => b.distanceFromNode - a.distanceFromNode);
+
+      // Choose the farthest valid intersection
+      for (const candidate of intersections.left) {
+        const clamped = clampMiterLength(node, candidate.point, wall.thicknessMm);
+        if (clamped) {
+          corners.left = clamped;
+          log.substep(
+            `${formatWallId(wallId)}.left: chose farthest @ ${candidate.distanceFromNode.toFixed(1)}mm = ${formatPoint(clamped)}`
+          );
+          break;
+        }
+      }
+    }
+
+    // Process right edge intersections
+    if (intersections.right.length > 0) {
+      // Sort by distance from node (descending - farthest first)
+      intersections.right.sort((a, b) => b.distanceFromNode - a.distanceFromNode);
+
+      // Choose the farthest valid intersection
+      for (const candidate of intersections.right) {
+        const clamped = clampMiterLength(node, candidate.point, wall.thicknessMm);
+        if (clamped) {
+          corners.right = clamped;
+          log.substep(
+            `${formatWallId(wallId)}.right: chose farthest @ ${candidate.distanceFromNode.toFixed(1)}mm = ${formatPoint(clamped)}`
+          );
+          break;
+        }
+      }
+    }
+  }
+
+  log.result('Farthest intersections selected');
+
+  // ============================================================
+  // STEP 4: Handle non-intersecting edges (extend to lines)
+  // ============================================================
+  log.step(4, 'Extending non-intersecting edges to infinite lines');
+
+  const nonIntersectingEdges: { wallId: string; edge: 'left' | 'right'; line: Line }[] = [];
+
+  for (const { wall, leftEdge, rightEdge } of wallEdges) {
+    const corners = result.get(wall.id)!;
+
+    if (!corners.left) {
+      const dir = vec.normalize(vec.sub(leftEdge.end, leftEdge.start));
+      nonIntersectingEdges.push({
+        wallId: wall.id,
+        edge: 'left',
+        line: { point: leftEdge.start, direction: dir },
+      });
+      log.substep(`${formatWallId(wall.id)}.left has no intersection`);
+    }
+
+    if (!corners.right) {
+      const dir = vec.normalize(vec.sub(rightEdge.end, rightEdge.start));
+      nonIntersectingEdges.push({
+        wallId: wall.id,
+        edge: 'right',
+        line: { point: rightEdge.start, direction: dir },
+      });
+      log.substep(`${formatWallId(wall.id)}.right has no intersection`);
+    }
+  }
+
+  // Try to intersect non-intersecting edges as infinite lines
+  for (let i = 0; i < nonIntersectingEdges.length; i++) {
+    for (let j = i + 1; j < nonIntersectingEdges.length; j++) {
+      const edgeA = nonIntersectingEdges[i];
+      const edgeB = nonIntersectingEdges[j];
+
+      // Don't intersect two edges from the same wall
+      if (edgeA.wallId === edgeB.wallId) continue;
+
+      const intersection = intersectLines(edgeA.line, edgeB.line);
+
+      if (intersection) {
+        log.substep(
+          `Extended: ${formatWallId(edgeA.wallId)}.${edgeA.edge} ∩ ${formatWallId(edgeB.wallId)}.${edgeB.edge} = ${formatPoint(intersection)}`
+        );
+
+        // Assign to both walls
+        const cornersA = result.get(edgeA.wallId)!;
+        const cornersB = result.get(edgeB.wallId)!;
+        const wallA = scene.walls.get(edgeA.wallId)!;
+        const wallB = scene.walls.get(edgeB.wallId)!;
+
+        if (edgeA.edge === 'left') {
+          cornersA.left = clampMiterLength(node, intersection, wallA.thicknessMm);
+        } else {
+          cornersA.right = clampMiterLength(node, intersection, wallA.thicknessMm);
+        }
+
+        if (edgeB.edge === 'left') {
+          cornersB.left = clampMiterLength(node, intersection, wallB.thicknessMm);
+        } else {
+          cornersB.right = clampMiterLength(node, intersection, wallB.thicknessMm);
+        }
+      }
+    }
+  }
+
+  log.result('Non-intersecting edges processed');
+
+  // ============================================================
+  // STEP 5: Create apex points for fully-intersected walls
+  // ============================================================
+  log.step(5, 'Creating apex points for walls with both edges intersected');
+
+  for (const [wallId, corners] of result) {
+    // If both left and right are intersected, we need an apex
+    if (corners.left && corners.right) {
+      log.substep(`${formatWallId(wallId)}: both edges intersected, checking for apex`);
+
+      // CASE 1: Try to find apex from non-intersecting edges of OTHER walls
+      const otherNonIntersecting = nonIntersectingEdges.filter(e => e.wallId !== wallId);
+
+      if (otherNonIntersecting.length >= 2) {
+        // Try to find apex by intersecting two non-intersecting edges from other walls
+        for (let i = 0; i < otherNonIntersecting.length; i++) {
+          for (let j = i + 1; j < otherNonIntersecting.length; j++) {
+            const edgeA = otherNonIntersecting[i];
+            const edgeB = otherNonIntersecting[j];
+
+            const apex = intersectLines(edgeA.line, edgeB.line);
+
+            if (apex && !almostEqual(apex, corners.left) && !almostEqual(apex, corners.right)) {
+              const wall = scene.walls.get(wallId)!;
+              corners.apex = clampMiterLength(node, apex, wall.thicknessMm);
+              log.substep(`${formatWallId(wallId)}: apex from other edges = ${formatPoint(corners.apex)}`);
+              break;
+            }
+          }
+          if (corners.apex) break;
+        }
+      }
+
+      // CASE 2: If no apex found and this is a multi-wall junction (3+ walls),
+      // use the shared node as the apex point
+      if (!corners.apex && incidentWalls.length >= 3) {
+        // Check if all walls at this node have both edges intersected
+        let allFullyIntersected = true;
+        for (const { wall } of wallEdges) {
+          const c = result.get(wall.id)!;
+          if (!c.left || !c.right) {
+            allFullyIntersected = false;
+            break;
+          }
+        }
+
+        if (allFullyIntersected) {
+          corners.apex = { x: node.x, y: node.y };
+          log.substep(`${formatWallId(wallId)}: apex = node position (all edges intersected) = ${formatPoint(corners.apex)}`);
+        }
+      }
+    }
+  }
+
+  log.result('Apex points computed');
+
   return result;
+}
+
+// ============================================================================
+// Wall Corners Type
+// ============================================================================
+
+/**
+ * Corner points for a wall at a node
+ */
+interface WallCorners {
+  left: Vec2 | null;   // Left edge intersection
+  right: Vec2 | null;  // Right edge intersection
+  apex: Vec2 | null;   // Optional apex point
 }
 
 // ============================================================================
@@ -384,100 +519,52 @@ function computeNodeCorners(node: Node, scene: Scene): Map<string, WallCorners> 
  */
 export function buildWallPolygon(wall: Wall, scene: Scene): Vec2[] {
   log.section(`Building Polygon for Wall ${formatWallId(wall.id)}`);
-  
-  // ============================================================
-  // STEP 1: Compute wall frame
-  // ============================================================
-  log.step(1, 'Computing wall coordinate frame');
-  
-  const { A, B, leftOfAB } = getWallFrame(wall, scene);
+
+  const nodeA = scene.nodes.get(wall.nodeAId)!;
+  const nodeB = scene.nodes.get(wall.nodeBId)!;
+
+  const dirAB = vec.normalize(vec.sub(nodeB, nodeA));
+  const perpAB = perpCCW(dirAB);
   const halfThickness = wall.thicknessMm / 2;
-  
-  log.substep(`Node A: ${formatPoint(A)}`);
-  log.substep(`Node B: ${formatPoint(B)}`);
-  log.substep(`Half thickness: ${halfThickness.toFixed(1)}mm`);
-  log.result('Frame computed');
-  
-  // ============================================================
-  // STEP 2: Compute fallback points (straight butt joint)
-  // ============================================================
-  log.step(2, 'Computing fallback points (no mitering)');
-  
-  const baseLeftA = vec.add(A, vec.scale(leftOfAB, halfThickness));
-  const baseRightA = vec.sub(A, vec.scale(leftOfAB, halfThickness));
-  const baseLeftB = vec.add(B, vec.scale(leftOfAB, halfThickness));
-  const baseRightB = vec.sub(B, vec.scale(leftOfAB, halfThickness));
-  
-  log.substep(`A left (fallback): ${formatPoint(baseLeftA)}`);
-  log.substep(`A right (fallback): ${formatPoint(baseRightA)}`);
-  log.substep(`B left (fallback): ${formatPoint(baseLeftB)}`);
-  log.substep(`B right (fallback): ${formatPoint(baseRightB)}`);
-  log.result('Fallback points computed');
-  
-  // ============================================================
-  // STEP 3: Get mitered corners
-  // ============================================================
-  log.step(3, 'Getting mitered corners from node junction solver');
-  
-  const cornersAtA = computeNodeCorners(A, scene).get(wall.id);
-  const cornersAtB = computeNodeCorners(B, scene).get(wall.id);
-  
-  // ============================================================
-  // STEP 4: Assign final corner points
-  // ============================================================
-  log.step(4, 'Assigning final corner points (miter or fallback)');
-  
-  // Node A corners (no swap needed - we're looking outward from A)
+
+  // Fallback points (straight butt joint)
+  const baseLeftA = vec.add(nodeA, vec.scale(perpAB, halfThickness));
+  const baseRightA = vec.sub(nodeA, vec.scale(perpAB, halfThickness));
+  const baseLeftB = vec.add(nodeB, vec.scale(perpAB, halfThickness));
+  const baseRightB = vec.sub(nodeB, vec.scale(perpAB, halfThickness));
+
+  // Get mitered corners (now works correctly for both nodeA and nodeB)
+  const cornersAtA = computeNodeCornersSegmentBased(nodeA, scene).get(wall.id);
+  const cornersAtB = computeNodeCornersSegmentBased(nodeB, scene).get(wall.id);
+
+  // Assign final corners (miter or fallback)
   const A_left = cornersAtA?.left ?? baseLeftA;
   const A_right = cornersAtA?.right ?? baseRightA;
   const A_apex = cornersAtA?.apex ?? null;
-  
-  log.substep(`Node A:`);
-  log.detail(`left: ${formatPoint(A_left)} ${cornersAtA?.left ? '(mitered)' : '(fallback)'}`);
-  log.detail(`right: ${formatPoint(A_right)} ${cornersAtA?.right ? '(mitered)' : '(fallback)'}`);
-  log.detail(`apex: ${formatPoint(A_apex)} ${A_apex ? '(present)' : '(none)'}`);
-  
-  // Node B corners (swap left↔right because we're looking inward to B)
+
+  // At node B, swap left↔right (we're looking from opposite direction)
   const B_left = cornersAtB?.right ?? baseLeftB;
   const B_right = cornersAtB?.left ?? baseRightB;
   const B_apex = cornersAtB?.apex ?? null;
-  
-  log.substep(`Node B (swapped left↔right for inward view):`);
-  log.detail(`left: ${formatPoint(B_left)} ${cornersAtB?.right ? '(mitered)' : '(fallback)'}`);
-  log.detail(`right: ${formatPoint(B_right)} ${cornersAtB?.left ? '(mitered)' : '(fallback)'}`);
-  log.detail(`apex: ${formatPoint(B_apex)} ${B_apex ? '(present)' : '(none)'}`);
-  
-  log.result('Final corners assigned');
-  
-  // ============================================================
-  // STEP 5: Build polygon in CCW order
-  // ============================================================
-  log.step(5, 'Building polygon vertices in CCW order');
-  
+
+  // Build polygon in CCW order
   const polygon: Vec2[] = [A_left];
-  log.substep(`#1: A_left ${formatPoint(A_left)}`);
-  
+
   if (A_apex) {
     polygon.push(A_apex);
-    log.substep(`#${polygon.length}: A_apex ${formatPoint(A_apex)}`);
   }
-  
+
   polygon.push(A_right);
-  log.substep(`#${polygon.length}: A_right ${formatPoint(A_right)}`);
-  
   polygon.push(B_right);
-  log.substep(`#${polygon.length}: B_right ${formatPoint(B_right)}`);
-  
+
   if (B_apex) {
     polygon.push(B_apex);
-    log.substep(`#${polygon.length}: B_apex ${formatPoint(B_apex)}`);
   }
-  
+
   polygon.push(B_left);
-  log.substep(`#${polygon.length}: B_left ${formatPoint(B_left)}`);
-  
+
   log.result(`Polygon complete with ${polygon.length} vertices`);
   log.section(`Finished Wall ${formatWallId(wall.id)}`);
-  
+
   return polygon;
 }

@@ -5,6 +5,7 @@ import { WallsLayer } from './layers/WallsLayer';
 import { PreviewLayer } from './layers/PreviewLayer';
 import { GuidesLayer } from './layers/GuidesLayer';
 import { MarqueeLayer } from './layers/MarqueeLayer';
+import { RayVisualization } from '../../ui/debug/RayVisualization';
 import { useStore } from '../../state/store';
 import { MIN_ZOOM_SCALE, MAX_ZOOM_SCALE } from '../../core/constants';
 import { WallTool } from '../../tools/wall.tool';
@@ -309,6 +310,9 @@ export function Stage() {
           marqueeCurrent={selectToolContext.marqueeCurrent}
         />
       )}
+
+      {/* DEBUG: Ray visualization (only when wall selected and debug enabled) */}
+      <RayVisualization />
     </KonvaStage>
   );
 }
