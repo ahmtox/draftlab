@@ -13,18 +13,23 @@ export type Wall = {
   thicknessMm: number;
   heightMm: number;
   raiseFromFloorMm: number;
-  leftFaceId?: string;   // ✅ NEW: room on left side (from A → B)
-  rightFaceId?: string;  // ✅ NEW: room on right side (from A → B)
+  leftFaceId?: string;
+  rightFaceId?: string;
 };
 
 export type Room = {
   id: string;
-  boundary: string[];      // ✅ NEW: ordered wall IDs forming closed loop
-  areaCache?: number;      // square millimeters
+  roomNumber: number;        // ✅ NEW: monotonic room number for display
+  boundary: string[];        // ordered wall IDs forming closed loop
+  halfEdges: string[];       // ordered half-edge IDs
+  areaMm2: number;          // cached area in square millimeters
+  perimeterMm: number;      // cached perimeter in millimeters
+  raiseFromFloorMm: number; // ✅ NEW: floor elevation (default 100mm = 10cm)
+  color?: string;           // fill color
 };
 
 export type Scene = {
   nodes: Map<string, Node>;
   walls: Map<string, Wall>;
-  rooms?: Map<string, Room>; // ✅ NEW: detected rooms
+  rooms: Map<string, Room>;  // detected rooms
 };

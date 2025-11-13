@@ -5,6 +5,7 @@ import type { ProjectMeta } from '../services/file-storage';
 import { DEFAULT_ZOOM_SCALE } from '../core/constants';
 import type { Vec2 } from '../core/math/vec';
 import { History } from '../core/commands/history';
+import { detectRooms } from '../core/topology/room-detect';
 
 type WallParams = {
   thicknessMm: number;
@@ -22,13 +23,14 @@ type DragState = {
 
 type UIState = {
   viewport: Viewport;
-  activeTool: 'select' | 'wall' | 'room' | 'measure'; // ✅ Added 'measure'
+  activeTool: 'select' | 'wall' | 'room' | 'measure';
   wallParams: WallParams;
   scene: Scene;
   currentProject: ProjectMeta | null;
   lastSavedAt: number | null;
   isSaving: boolean;
   selectedWallIds: Set<string>;
+  selectedRoomId: string | null; // ✅ NEW: for debug visualization
   hoveredWallId: string | null;
   dragState: DragState;
   snapCandidateA: any | null;
@@ -37,7 +39,7 @@ type UIState = {
   history: History;
   
   setViewport: (viewport: Viewport) => void;
-  setActiveTool: (tool: 'select' | 'wall' | 'room' | 'measure') => void; // ✅ Updated
+  setActiveTool: (tool: 'select' | 'wall' | 'room' | 'measure') => void;
   setWallParams: (params: WallParams) => void;
   setScene: (scene: Scene) => void;
   setCurrentProject: (project: ProjectMeta | null) => void;
@@ -45,6 +47,7 @@ type UIState = {
   setIsSaving: (saving: boolean) => void;
   resetProject: () => void;
   setSelectedWallIds: (ids: Set<string>) => void;
+  setSelectedRoomId: (id: string | null) => void; // ✅ NEW
   setHoveredWallId: (id: string | null) => void;
   setDragState: (state: Partial<DragState>) => void;
   setSnapCandidateA: (candidate: any | null) => void;
@@ -52,6 +55,7 @@ type UIState = {
   setViewMode: (mode: '2D' | '3D') => void;
   undo: () => void;
   redo: () => void;
+  detectAndUpdateRooms: () => void;
 };
 
 export const useStore = create<UIState>((set, get) => ({
@@ -69,11 +73,13 @@ export const useStore = create<UIState>((set, get) => ({
   scene: {
     nodes: new Map(),
     walls: new Map(),
+    rooms: new Map(),
   },
   currentProject: null,
   lastSavedAt: null,
   isSaving: false,
   selectedWallIds: new Set(),
+  selectedRoomId: null, // ✅ NEW
   hoveredWallId: null,
   dragState: {
     mode: null,
@@ -90,11 +96,25 @@ export const useStore = create<UIState>((set, get) => ({
   setViewport: (viewport) => set({ viewport }),
   setActiveTool: (tool) => set({ activeTool: tool }),
   setWallParams: (params) => set({ wallParams: params }),
-  setScene: (scene) => set({ scene }),
+  
+  setScene: (scene) => {
+    // ✅ Auto-detect rooms whenever scene changes (stateless, no counter)
+    const detectedRooms = detectRooms(scene);
+    const roomsMap = new Map(detectedRooms.map(r => [r.id, r]));
+    
+    set({ 
+      scene: {
+        ...scene,
+        rooms: roomsMap,
+      }
+    });
+  },
+  
   setCurrentProject: (project) => set({ currentProject: project }),
   setLastSavedAt: (timestamp) => set({ lastSavedAt: timestamp }),
   setIsSaving: (saving) => set({ isSaving: saving }),
   setSelectedWallIds: (ids) => set({ selectedWallIds: ids }),
+  setSelectedRoomId: (id) => set({ selectedRoomId: id }), // ✅ NEW
   setHoveredWallId: (id) => set({ hoveredWallId: id }),
   setDragState: (state) => set((prev) => ({ 
     dragState: { ...prev.dragState, ...state } 
@@ -107,8 +127,10 @@ export const useStore = create<UIState>((set, get) => ({
     scene: {
       nodes: new Map(),
       walls: new Map(),
+      rooms: new Map(),
     },
     selectedWallIds: new Set(),
+    selectedRoomId: null, // ✅ NEW
     hoveredWallId: null,
     dragState: {
       mode: null,
@@ -136,5 +158,18 @@ export const useStore = create<UIState>((set, get) => ({
     if (!result.ok) {
       console.error('Redo failed:', result.error);
     }
+  },
+
+  detectAndUpdateRooms: () => {
+    const scene = get().scene;
+    const detectedRooms = detectRooms(scene);
+    const roomsMap = new Map(detectedRooms.map(r => [r.id, r]));
+    
+    set({
+      scene: {
+        ...scene,
+        rooms: roomsMap,
+      }
+    });
   },
 }));

@@ -4,6 +4,7 @@ import { memo, useState, useEffect } from 'react';
 import { useStore } from '../../state/store';
 import { worldToScreen, screenToWorld } from '../../renderers/konva/viewport';
 import { buildWallPolygon } from '../../core/geometry/miter';
+import { buildHalfEdgeStructure, buildInnerRoomPolygon } from '../../core/topology/half-edge';
 import type { Vec2 } from '../../core/math/vec';
 import * as vec from '../../core/math/vec';
 
@@ -18,12 +19,13 @@ function RayVisualizationComponent() {
   const viewport = useStore((state) => state.viewport);
   const scene = useStore((state) => state.scene);
   const selectedWallIds = useStore((state) => state.selectedWallIds);
+  const selectedRoomId = useStore((state) => state.selectedRoomId); // ✅ NEW
   const [hoveredRay, setHoveredRay] = useState<Ray | null>(null);
-  const [hoveredVertex, setHoveredVertex] = useState<{ index: number; point: Vec2; wallId: string } | null>(null);
+  const [hoveredVertex, setHoveredVertex] = useState<{ index: number; point: Vec2; wallId?: string; roomId?: string } | null>(null);
   const [cursorPx, setCursorPx] = useState<Vec2 | null>(null);
   const [debugEnabled, setDebugEnabled] = useState(false);
 
-  // ✅ Listen for debug toggle (same key combo as DebugOverlay)
+  // Listen for debug toggle (same key combo as DebugOverlay)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'd') {
@@ -48,12 +50,156 @@ function RayVisualizationComponent() {
     return () => window.removeEventListener('mousemove', handleMouseMove);
   }, [debugEnabled]);
 
-  // ✅ Don't render anything if debug is disabled
   if (!debugEnabled) return <Layer listening={false} />;
 
+  // ✅ Visualize selected room OR selected wall
   const selectedWallId = selectedWallIds.size === 1 ? Array.from(selectedWallIds)[0] : null;
   const selectedWall = selectedWallId ? scene.walls.get(selectedWallId) : null;
+  const selectedRoom = selectedRoomId ? scene.rooms.get(selectedRoomId) : null;
 
+  // ✅ Room visualization takes priority
+  if (selectedRoom) {
+    const halfEdges = buildHalfEdgeStructure(scene);
+    const roomPolygonMm = buildInnerRoomPolygon(
+      selectedRoom.halfEdges,
+      halfEdges,
+      scene
+    );
+
+    // Check which vertex is being hovered
+    let newHoveredVertex: { index: number; point: Vec2; roomId: string } | null = null;
+    
+    if (cursorPx) {
+      const cursorMm = screenToWorld(cursorPx, viewport);
+      const hoverRadius = 20 / viewport.scale;
+
+      for (let i = 0; i < roomPolygonMm.length; i++) {
+        const dist = vec.distance(cursorMm, roomPolygonMm[i]);
+        if (dist < hoverRadius) {
+          newHoveredVertex = { 
+            index: i, 
+            point: roomPolygonMm[i],
+            roomId: selectedRoomId,
+          };
+          break;
+        }
+      }
+    }
+
+    if (newHoveredVertex?.index !== hoveredVertex?.index) {
+      setHoveredVertex(newHoveredVertex);
+    }
+
+    return (
+      <Layer listening={false}>
+        {/* Draw room polygon vertices */}
+        {roomPolygonMm.map((vertex, index) => {
+          const screenPos = worldToScreen(vertex, viewport);
+          const isHovered = hoveredVertex?.index === index && hoveredVertex?.roomId === selectedRoomId;
+
+          return (
+            <React.Fragment key={`vertex-${index}`}>
+              {/* Vertex circle */}
+              <Circle
+                x={screenPos.x}
+                y={screenPos.y}
+                radius={isHovered ? 10 : 6}
+                fill="#9c27b0"
+                stroke="#ffffff"
+                strokeWidth={2}
+                listening={false}
+              />
+
+              {/* Vertex label */}
+              <Text
+                x={screenPos.x + 8}
+                y={screenPos.y - 6}
+                text={`${index + 1}`}
+                fontSize={10}
+                fill="#ffffff"
+                stroke="#000000"
+                strokeWidth={2}
+                listening={false}
+              />
+
+              {/* Detailed info on hover */}
+              {isHovered && (
+                <Group x={screenPos.x + 15} y={screenPos.y - 70}>
+                  <Rect
+                    x={-5}
+                    y={-5}
+                    width={250}
+                    height={70}
+                    fill="rgba(156, 39, 176, 0.95)"
+                    cornerRadius={4}
+                    listening={false}
+                  />
+                  
+                  <Text
+                    x={0}
+                    y={0}
+                    text={`Room ${selectedRoom.roomNumber}`}
+                    fontSize={12}
+                    fontStyle="bold"
+                    fill="#ffffff"
+                    listening={false}
+                  />
+                  
+                  <Text
+                    x={0}
+                    y={18}
+                    text={`Vertex ${index + 1}/${roomPolygonMm.length}`}
+                    fontSize={12}
+                    fontStyle="bold"
+                    fill="#ffffff"
+                    listening={false}
+                  />
+                  
+                  <Text
+                    x={0}
+                    y={36}
+                    text={`Position: (${vertex.x.toFixed(1)}, ${vertex.y.toFixed(1)}) mm`}
+                    fontSize={11}
+                    fill="#ffffff"
+                    listening={false}
+                  />
+                  
+                  <Text
+                    x={0}
+                    y={54}
+                    text={`Area: ${(selectedRoom.areaMm2 / 1_000_000).toFixed(2)}m²`}
+                    fontSize={10}
+                    fill="#eeeeee"
+                    listening={false}
+                  />
+                </Group>
+              )}
+            </React.Fragment>
+          );
+        })}
+
+        {/* Draw room polygon edges */}
+        {roomPolygonMm.map((vertex, index) => {
+          const nextVertex = roomPolygonMm[(index + 1) % roomPolygonMm.length];
+          const start = worldToScreen(vertex, viewport);
+          const end = worldToScreen(nextVertex, viewport);
+
+          return (
+            <Line
+              key={`edge-${index}`}
+              points={[start.x, start.y, end.x, end.y]}
+              stroke="#9c27b0"
+              strokeWidth={2}
+              opacity={0.7}
+              listening={false}
+            />
+          );
+        })}
+      </Layer>
+    );
+  }
+
+  // ✅ Fall back to wall visualization (existing code)
   if (!selectedWall) return <Layer listening={false} />;
 
   const nodeA = scene.nodes.get(selectedWall.nodeAId);
@@ -244,7 +390,7 @@ function RayVisualizationComponent() {
       {/* Draw polygon vertices */}
       {polygonMm.map((vertex, index) => {
         const screenPos = worldToScreen(vertex, viewport);
-        const isHovered = hoveredVertex?.index === index;
+        const isHovered = hoveredVertex?.index === index && hoveredVertex?.wallId === selectedWallId;
         const vertexLabel = getVertexLabel(index, polygonMm.length);
 
         return (

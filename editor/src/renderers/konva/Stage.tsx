@@ -1,6 +1,7 @@
 import { Stage as KonvaStage } from 'react-konva';
 import { useCallback, useRef, useEffect, useState } from 'react';
 import { GridLayer } from './layers/GridLayer';
+import { RoomsLayer } from './layers/RoomsLayer';
 import { WallsLayer } from './layers/WallsLayer';
 import { PreviewLayer } from './layers/PreviewLayer';
 import { GuidesLayer } from './layers/GuidesLayer';
@@ -27,6 +28,7 @@ export function Stage() {
   const history = useStore((state) => state.history);
   const selectedWallIds = useStore((state) => state.selectedWallIds);
   const setSelectedWallIds = useStore((state) => state.setSelectedWallIds);
+  const setSelectedRoomId = useStore((state) => state.setSelectedRoomId); // ✅ NEW
   
   const rafIdRef = useRef<number | null>(null);
   const [dimensions, setDimensions] = useState({
@@ -97,7 +99,11 @@ export function Stage() {
             }
           }
 
-          setScene({ nodes: newNodes, walls: currentScene.walls });
+          setScene({ 
+            nodes: newNodes, 
+            walls: currentScene.walls,
+            rooms: currentScene.rooms // Preserve rooms during drag
+          });
         },
         (nodePositions, mergeTargets) => {
           // Commit multi-wall drag
@@ -199,11 +205,12 @@ export function Stage() {
           setSelectedWallIds(new Set());
         }
       }
-      // Escape: Clear selection or cancel measurement
+      // ✅ Escape: Clear selection (walls AND rooms) or cancel measurement
       else if (e.key === 'Escape') {
         e.preventDefault();
         if (activeTool === 'select') {
           setSelectedWallIds(new Set());
+          setSelectedRoomId(null); // ✅ Clear room selection too
         } else if (activeTool === 'measure') {
           measureToolRef.current?.reset();
         }
@@ -212,7 +219,7 @@ export function Stage() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeTool, history, setScene, setSelectedWallIds]);
+  }, [activeTool, history, setScene, setSelectedWallIds, setSelectedRoomId]);
 
   const handleWheel = useCallback((e: any) => {
     e.evt.preventDefault();
@@ -294,7 +301,7 @@ export function Stage() {
   const showWallPreview = activeTool === 'wall' && wallToolContext?.state !== 'idle' && wallToolContext?.firstPointMm && wallToolContext?.currentPointMm;
   const showWallHover = activeTool === 'wall' && wallToolContext?.state === 'idle' && wallToolContext?.hoverPointMm;
 
-  // ✅ UPDATED: Collect snap candidates from all active tools
+  // Collect snap candidates from all active tools
   const allSnapCandidates: (any | null)[] = [];
 
   if (activeTool === 'wall') {
@@ -304,7 +311,6 @@ export function Stage() {
     allSnapCandidates.push(selectToolContext?.snapCandidateB || null);
     allSnapCandidates.push(...(selectToolContext?.snapCandidates || []));
   } else if (activeTool === 'measure') {
-    // ✅ NEW: Add measure tool snap candidates
     allSnapCandidates.push(measureToolContext?.snapCandidate || null);
   }
 
@@ -331,11 +337,18 @@ export function Stage() {
         cursor: getCursorStyle()
       }}
     >
-      {/* Bottom layers */}
+      {/* Z-ORDER: Bottom to Top per Architecture Spec */}
+      
+      {/* 1. Grid Layer (bottom) */}
       <GridLayer />
+      
+      {/* 2. Rooms Layer (fills below walls, labels on top) */}
+      <RoomsLayer />
+      
+      {/* 3. Walls Layer */}
       <WallsLayer />
       
-      {/* Preview layers */}
+      {/* 4. Preview layers (above walls) */}
       {showWallPreview && (
         <PreviewLayer
           previewWall={{
@@ -353,10 +366,10 @@ export function Stage() {
         />
       )}
 
-      {/* Guides layer with snap candidates */}
+      {/* 5. Guides layer (snap indicators) */}
       <GuidesLayer snapCandidates={allSnapCandidates} />
 
-      {/* Marquee selection */}
+      {/* 6. Marquee selection */}
       {selectToolContext?.state === 'marquee' && (
         <MarqueeLayer
           marqueeStart={selectToolContext.marqueeStart}
@@ -364,10 +377,10 @@ export function Stage() {
         />
       )}
 
-      {/* Measure layer */}
+      {/* 7. Measure layer */}
       <MeasureLayer measureContext={measureToolContext} />
 
-      {/* DEBUG: Ray visualization (only when wall selected and debug enabled) */}
+      {/* 8. Debug: Ray visualization (top) */}
       <RayVisualization />
     </KonvaStage>
   );

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useStore } from '../../state/store';
 import { screenToWorld } from '../../renderers/konva/viewport';
 import { buildWallPolygon } from '../../core/geometry/miter';
+import { buildHalfEdgeStructure, buildInnerRoomPolygon } from '../../core/topology/half-edge';
 import type { Vec2 } from '../../core/math/vec';
 
 export function DebugOverlay() {
@@ -10,6 +11,7 @@ export function DebugOverlay() {
   const viewport = useStore((state) => state.viewport);
   const scene = useStore((state) => state.scene);
   const selectedWallIds = useStore((state) => state.selectedWallIds);
+  const selectedRoomId = useStore((state) => state.selectedRoomId); // ✅ NEW
 
   // Toggle debug overlay with Ctrl+Shift+D
   useEffect(() => {
@@ -36,12 +38,12 @@ export function DebugOverlay() {
     return () => window.removeEventListener('mousemove', handleMouseMove);
   }, [enabled]);
 
-  // ✅ Don't render anything if disabled
   if (!enabled) return null;
 
   const cursorMm = cursorPx ? screenToWorld(cursorPx, viewport) : null;
   const selectedWallId = selectedWallIds.size === 1 ? Array.from(selectedWallIds)[0] : null;
   const selectedWall = selectedWallId ? scene.walls.get(selectedWallId) : null;
+  const selectedRoom = selectedRoomId ? scene.rooms.get(selectedRoomId) : null; // ✅ NEW
 
   let nodeA = null;
   let nodeB = null;
@@ -53,6 +55,17 @@ export function DebugOverlay() {
     polygonPoints = buildWallPolygon(selectedWall, scene);
   }
 
+  // ✅ NEW: Get room polygon points
+  let roomPolygonPoints: Vec2[] = [];
+  if (selectedRoom) {
+    const halfEdges = buildHalfEdgeStructure(scene);
+    roomPolygonPoints = buildInnerRoomPolygon(
+      selectedRoom.halfEdges,
+      halfEdges,
+      scene
+    );
+  }
+
   // Helper to format wall ID consistently with miter.ts logs
   const formatWallId = (id: string): string => {
     return id.slice(-5);
@@ -61,7 +74,7 @@ export function DebugOverlay() {
   return (
     <div 
       className="fixed top-16 left-4 z-50 bg-black/90 text-white p-4 rounded-lg font-mono text-xs max-w-md shadow-2xl border border-gray-700 max-h-[calc(100vh-5rem)] overflow-y-auto"
-      style={{ pointerEvents: 'auto' }} // ✅ Only overlay itself receives pointer events
+      style={{ pointerEvents: 'auto' }}
     >
       {/* Scrollbar styling */}
       <style>{`
@@ -109,8 +122,45 @@ export function DebugOverlay() {
         </div>
       </div>
 
-      {/* Selected Wall Details */}
-      {selectedWall && nodeA && nodeB ? (
+      {/* ✅ NEW: Selected Room Details */}
+      {selectedRoom ? (
+        <div className="mb-4">
+          <h4 className="text-purple-400 font-semibold mb-1">Selected Room</h4>
+          <div className="pl-2 space-y-0.5">
+            <div className="bg-purple-900/30 p-2 rounded border border-purple-700/50 mb-2">
+              <div className="text-purple-300 font-bold text-sm">
+                Room {selectedRoom.roomNumber}
+              </div>
+              <div className="text-gray-400 text-[10px] mt-1">
+                ID: {selectedRoom.id.slice(-8)}
+              </div>
+            </div>
+            
+            <div className="mt-2 text-purple-400 font-semibold">Metrics:</div>
+            <div className="pl-2 bg-purple-900/20 p-2 rounded space-y-0.5">
+              <div>Area: {(selectedRoom.areaMm2 / 1_000_000).toFixed(2)}m²</div>
+              <div>Perimeter: {(selectedRoom.perimeterMm / 1000).toFixed(2)}m</div>
+              <div>Walls: {selectedRoom.boundary.length}</div>
+            </div>
+
+            <div className="mt-2 text-purple-400 font-semibold">
+              Polygon Points ({roomPolygonPoints.length}):
+            </div>
+            <div className="pl-2 bg-purple-900/20 p-2 rounded max-h-32 overflow-y-auto space-y-1">
+              <div className="text-gray-400 text-[10px] mb-1 italic">
+                Hover over purple vertices in canvas
+              </div>
+              {roomPolygonPoints.map((pt, i) => (
+                <div key={i} className="text-[10px] font-mono">
+                  <span className="text-purple-300">#{i + 1}:</span>{' '}
+                  ({pt.x.toFixed(1)}, {pt.y.toFixed(1)}) mm
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : selectedWall && nodeA && nodeB ? (
+        /* Selected Wall Details */
         <div className="mb-4">
           <h4 className="text-yellow-400 font-semibold mb-1">Selected Wall</h4>
           <div className="pl-2 space-y-0.5">
@@ -165,29 +215,33 @@ export function DebugOverlay() {
         </div>
       ) : (
         <div className="mb-4">
-          <h4 className="text-gray-500 font-semibold mb-1">Selected Wall</h4>
+          <h4 className="text-gray-500 font-semibold mb-1">Selection</h4>
           <div className="pl-2 text-gray-400">
-            {selectedWallIds.size === 0 ? 'No wall selected' : `${selectedWallIds.size} walls selected (select 1 for details)`}
+            {selectedWallIds.size === 0 
+              ? 'No selection. Click a room in debug mode.' 
+              : `${selectedWallIds.size} walls selected`}
           </div>
         </div>
       )}
 
       {/* Scene Stats */}
-      <div>
+      <div className="mb-4">
         <h4 className="text-purple-400 font-semibold mb-1">Scene Stats</h4>
         <div className="pl-2 space-y-0.5">
           <div>Nodes: {scene.nodes.size}</div>
           <div>Walls: {scene.walls.size}</div>
-          <div>Selected: {selectedWallIds.size}</div>
+          <div>Rooms: {scene.rooms.size}</div>
+          <div>Selected Walls: {selectedWallIds.size}</div>
+          <div>Selected Room: {selectedRoomId ? '1' : '0'}</div>
         </div>
       </div>
 
       {/* Instructions */}
       <div className="mt-4 pt-3 border-t border-gray-700">
         <div className="text-gray-400 text-[10px] space-y-1">
-          <div>💡 <span className="text-gray-300">Select a wall</span> to see detailed miter info</div>
-          <div>💡 <span className="text-gray-300">Hover over orange vertices</span> to see wall info</div>
-          <div>💡 <span className="text-gray-300">Hover over ray origins</span> to see ray details</div>
+          <div>💡 <span className="text-gray-300">Click a room</span> to inspect its polygon</div>
+          <div>💡 <span className="text-gray-300">Select a wall</span> to see miter details</div>
+          <div>💡 <span className="text-gray-300">Hover vertices</span> for coordinates</div>
         </div>
       </div>
     </div>
