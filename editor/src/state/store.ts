@@ -22,7 +22,7 @@ type DragState = {
 
 type UIState = {
   viewport: Viewport;
-  activeTool: 'select' | 'wall' | 'room';
+  activeTool: 'select' | 'wall' | 'room' | 'measure'; // ✅ Added 'measure'
   wallParams: WallParams;
   scene: Scene;
   currentProject: ProjectMeta | null;
@@ -33,11 +33,11 @@ type UIState = {
   dragState: DragState;
   snapCandidateA: any | null;
   snapCandidateB: any | null;
-  viewMode: '2D' | '3D'; // ✅ NEW
+  viewMode: '2D' | '3D';
   history: History;
   
   setViewport: (viewport: Viewport) => void;
-  setActiveTool: (tool: 'select' | 'wall' | 'room') => void;
+  setActiveTool: (tool: 'select' | 'wall' | 'room' | 'measure') => void; // ✅ Updated
   setWallParams: (params: WallParams) => void;
   setScene: (scene: Scene) => void;
   setCurrentProject: (project: ProjectMeta | null) => void;
@@ -49,7 +49,7 @@ type UIState = {
   setDragState: (state: Partial<DragState>) => void;
   setSnapCandidateA: (candidate: any | null) => void;
   setSnapCandidateB: (candidate: any | null) => void;
-  setViewMode: (mode: '2D' | '3D') => void; // ✅ NEW
+  setViewMode: (mode: '2D' | '3D') => void;
   undo: () => void;
   redo: () => void;
 };
@@ -84,7 +84,7 @@ export const useStore = create<UIState>((set, get) => ({
   },
   snapCandidateA: null,
   snapCandidateB: null,
-  viewMode: '2D', // ✅ NEW - default to 2D
+  viewMode: '2D',
   history: new History(),
 
   setViewport: (viewport) => set({ viewport }),
@@ -101,7 +101,7 @@ export const useStore = create<UIState>((set, get) => ({
   })),
   setSnapCandidateA: (candidate) => set({ snapCandidateA: candidate }),
   setSnapCandidateB: (candidate) => set({ snapCandidateB: candidate }),
-  setViewMode: (mode) => set({ viewMode: mode }), // ✅ NEW
+  setViewMode: (mode) => set({ viewMode: mode }),
 
   resetProject: () => set({
     scene: {

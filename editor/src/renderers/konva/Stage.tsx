@@ -5,11 +5,13 @@ import { WallsLayer } from './layers/WallsLayer';
 import { PreviewLayer } from './layers/PreviewLayer';
 import { GuidesLayer } from './layers/GuidesLayer';
 import { MarqueeLayer } from './layers/MarqueeLayer';
+import { MeasureLayer } from './layers/MeasureLayer';
 import { RayVisualization } from '../../ui/debug/RayVisualization';
 import { useStore } from '../../state/store';
 import { MIN_ZOOM_SCALE, MAX_ZOOM_SCALE } from '../../core/constants';
 import { WallTool } from '../../tools/wall.tool';
 import { SelectTool } from '../../tools/select.tool';
+import { MeasureTool } from '../../tools/measure.tool';
 import { AddWallCommand } from '../../core/commands/add-wall';
 import { MoveNodeCommand } from '../../core/commands/move-node';
 import { MergeNodesCommand } from '../../core/commands/merge-nodes';
@@ -34,9 +36,11 @@ export function Stage() {
 
   const wallToolRef = useRef<WallTool | null>(null);
   const selectToolRef = useRef<SelectTool | null>(null);
+  const measureToolRef = useRef<MeasureTool | null>(null);
 
   const [wallToolContext, setWallToolContext] = useState<any>(null);
   const [selectToolContext, setSelectToolContext] = useState<any>(null);
+  const [measureToolContext, setMeasureToolContext] = useState<any>(null);
 
   // Track Shift key state
   const [shiftKey, setShiftKey] = useState(false);
@@ -129,11 +133,19 @@ export function Stage() {
         }
       );
     }
+
+    // Initialize measure tool
+    if (!measureToolRef.current) {
+      measureToolRef.current = new MeasureTool(
+        (ctx) => setMeasureToolContext(ctx)
+      );
+    }
   }, [history, setScene, setSelectedWallIds]);
 
   useEffect(() => {
     wallToolRef.current?.reset();
     selectToolRef.current?.reset();
+    measureToolRef.current?.reset();
   }, [activeTool]);
 
   // Track Shift key globally
@@ -187,10 +199,14 @@ export function Stage() {
           setSelectedWallIds(new Set());
         }
       }
-      // Escape: Clear selection
-      else if (e.key === 'Escape' && activeTool === 'select') {
+      // Escape: Clear selection or cancel measurement
+      else if (e.key === 'Escape') {
         e.preventDefault();
-        setSelectedWallIds(new Set());
+        if (activeTool === 'select') {
+          setSelectedWallIds(new Set());
+        } else if (activeTool === 'measure') {
+          measureToolRef.current?.reset();
+        }
       }
     };
 
@@ -243,6 +259,8 @@ export function Stage() {
       wallToolRef.current?.handlePointerDown(pointer, scene, viewport, shiftKey);
     } else if (activeTool === 'select') {
       selectToolRef.current?.handlePointerDown(pointer, scene, viewport, modifiers);
+    } else if (activeTool === 'measure') {
+      measureToolRef.current?.handlePointerDown(pointer, scene, viewport);
     }
   }, [activeTool, scene, viewport, shiftKey]);
 
@@ -255,6 +273,8 @@ export function Stage() {
       wallToolRef.current?.handlePointerMove(pointer, scene, viewport, buttons, shiftKey);
     } else if (activeTool === 'select') {
       selectToolRef.current?.handlePointerMove(pointer, scene, viewport);
+    } else if (activeTool === 'measure') {
+      measureToolRef.current?.handlePointerMove(pointer, scene, viewport);
     }
   }, [activeTool, scene, viewport, shiftKey]);
 
@@ -265,6 +285,8 @@ export function Stage() {
       wallToolRef.current?.handlePointerUp(pointer, scene, viewport, shiftKey);
     } else if (activeTool === 'select') {
       selectToolRef.current?.handlePointerUp(pointer, scene, viewport);
+    } else if (activeTool === 'measure') {
+      measureToolRef.current?.handlePointerUp(pointer, scene, viewport);
     }
   }, [activeTool, scene, viewport, shiftKey]);
 
@@ -272,17 +294,26 @@ export function Stage() {
   const showWallPreview = activeTool === 'wall' && wallToolContext?.state !== 'idle' && wallToolContext?.firstPointMm && wallToolContext?.currentPointMm;
   const showWallHover = activeTool === 'wall' && wallToolContext?.state === 'idle' && wallToolContext?.hoverPointMm;
 
-  // Collect snap candidates from active tool
-  const wallSnapCandidates = activeTool === 'wall' && wallToolContext?.snapCandidate 
-    ? [wallToolContext.snapCandidate] 
-    : [];
+  // ✅ UPDATED: Collect snap candidates from all active tools
+  const allSnapCandidates: (any | null)[] = [];
 
-  const selectSnapCandidates = activeTool === 'select' && selectToolContext?.snapCandidates 
-    ? selectToolContext.snapCandidates 
-    : [];
+  if (activeTool === 'wall') {
+    allSnapCandidates.push(wallToolContext?.snapCandidate || null);
+  } else if (activeTool === 'select') {
+    allSnapCandidates.push(selectToolContext?.snapCandidateA || null);
+    allSnapCandidates.push(selectToolContext?.snapCandidateB || null);
+    allSnapCandidates.push(...(selectToolContext?.snapCandidates || []));
+  } else if (activeTool === 'measure') {
+    // ✅ NEW: Add measure tool snap candidates
+    allSnapCandidates.push(measureToolContext?.snapCandidate || null);
+  }
 
-  // Combine all snap candidates
-  const allSnapCandidates = [...wallSnapCandidates, ...selectSnapCandidates];
+  // Determine cursor style based on tool
+  const getCursorStyle = () => {
+    if (activeTool === 'select') return 'default';
+    if (activeTool === 'measure') return 'crosshair';
+    return 'crosshair';
+  };
 
   return (
     <KonvaStage
@@ -297,7 +328,7 @@ export function Stage() {
         position: 'absolute', 
         top: 0, 
         left: 0, 
-        cursor: activeTool === 'select' ? 'default' : 'crosshair' 
+        cursor: getCursorStyle()
       }}
     >
       {/* Bottom layers */}
@@ -332,6 +363,9 @@ export function Stage() {
           marqueeCurrent={selectToolContext.marqueeCurrent}
         />
       )}
+
+      {/* Measure layer */}
+      <MeasureLayer measureContext={measureToolContext} />
 
       {/* DEBUG: Ray visualization (only when wall selected and debug enabled) */}
       <RayVisualization />

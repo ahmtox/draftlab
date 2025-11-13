@@ -1,6 +1,6 @@
 import { useStore } from '../../state/store';
 
-type Tool = 'select' | 'wall' | 'room';
+type Tool = 'select' | 'wall' | 'room' | 'measure'; // ✅ Added 'measure'
 
 interface ToolButton {
   id: Tool;
@@ -12,6 +12,7 @@ const tools: ToolButton[] = [
   { id: 'select', label: 'Select', icon: '⌘' },
   { id: 'wall', label: 'Wall', icon: '│' },
   { id: 'room', label: 'Room', icon: '□' },
+  { id: 'measure', label: 'Measure', icon: '📏' }, // ✅ NEW
 ];
 
 export function Sidebar() {
