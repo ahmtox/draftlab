@@ -4,8 +4,9 @@ import type { Node, Scene } from '../domain/types';
 import type { Viewport } from '../../renderers/konva/viewport';
 import { screenToWorld } from '../../renderers/konva/viewport';
 import { DEFAULT_TOL } from '../constants';
+import { generateNodeGuidelines, findClosestGuideline, type Guideline } from './guides';
 
-export type SnapType = 'node' | 'grid' | 'edge' | 'midpoint' | 'angle';
+export type SnapType = 'node' | 'grid' | 'edge' | 'midpoint' | 'angle' | 'guideline';
 
 export type SnapCandidate = {
   point: Vec2;          // mm world coords
@@ -13,6 +14,7 @@ export type SnapCandidate = {
   entityId?: string;    // for node/edge snaps
   priority: number;     // higher = stronger
   distancePx: number;   // screen-space distance for display
+  guideline?: Guideline; // for guideline snaps
 };
 
 export type SnapResult = {
@@ -33,8 +35,10 @@ export function findSnapCandidate(
     snapToNodes?: boolean;
     snapToEdges?: boolean;
     snapToAngles?: boolean;
+    snapToGuidelines?: boolean;
     angleOrigin?: Vec2;
     excludeNodeIds?: Set<string>;
+    guidelineOrigin?: Vec2; // Origin point for filtering redundant guidelines
   } = {}
 ): SnapResult {
   const {
@@ -42,8 +46,10 @@ export function findSnapCandidate(
     snapToNodes = true,
     snapToEdges = true,
     snapToAngles = false,
+    snapToGuidelines = false,
     angleOrigin = null,
     excludeNodeIds = new Set(),
+    guidelineOrigin = null,
   } = options;
 
   const cursorWorldMm = screenToWorld(cursorScreenPx, viewport);
@@ -76,31 +82,34 @@ export function findSnapCandidate(
   // Collect all snap candidates within snap radius
   // (we'll filter by angle line later if angle snapping is active)
 
-  // Grid snapping (priority 1)
+  // Guideline snapping (priority 1 - lowest, just alignment aids)
+  if (snapToGuidelines) {
+    const GUIDELINE_TOLERANCE_MM = 50; // Keep at 50mm always
+    
+    // Pass guidelineOrigin to filter redundant guidelines
+    const guidelines = generateNodeGuidelines(scene, excludeNodeIds, guidelineOrigin);
+    const guidelineSnap = findClosestGuideline(cursorWorldMm, guidelines, GUIDELINE_TOLERANCE_MM);
+
+    if (guidelineSnap) {
+      const distanceMm = vec.distance(cursorWorldMm, guidelineSnap.snapPoint);
+      const distancePx = distanceMm * viewport.scale;
+
+      candidates.push({
+        point: guidelineSnap.snapPoint,
+        type: 'guideline',
+        entityId: guidelineSnap.guideline.nodeId,
+        priority: 1, // Lowest priority - just visual alignment
+        distancePx,
+        guideline: guidelineSnap.guideline,
+      });
+    }
+  }
+
+  // Grid snapping (priority 2 - slightly above guidelines)
   if (snapToGrid) {
     const gridCandidate = snapToGridPoint(cursorWorldMm, viewport);
     if (gridCandidate && gridCandidate.distancePx <= DEFAULT_TOL.snapPx) {
       candidates.push(gridCandidate);
-    }
-  }
-
-  // Node snapping (priority 5)
-  if (snapToNodes) {
-    for (const node of scene.nodes.values()) {
-      if (excludeNodeIds.has(node.id)) continue;
-
-      const distanceMm = vec.distance(cursorWorldMm, node);
-      const distancePx = distanceMm * viewport.scale;
-
-      if (distancePx <= DEFAULT_TOL.snapPx) {
-        candidates.push({
-          point: { x: node.x, y: node.y },
-          type: 'node',
-          entityId: node.id,
-          priority: 5,
-          distancePx,
-        });
-      }
     }
   }
 
@@ -156,11 +165,77 @@ export function findSnapCandidate(
     }
   }
 
-  // If angle snapping is active, filter candidates by angle line
+  // Node snapping (priority 5 - highest for geometry)
+  if (snapToNodes) {
+    for (const node of scene.nodes.values()) {
+      if (excludeNodeIds.has(node.id)) continue;
+
+      const distanceMm = vec.distance(cursorWorldMm, node);
+      const distancePx = distanceMm * viewport.scale;
+
+      if (distancePx <= DEFAULT_TOL.snapPx) {
+        candidates.push({
+          point: { x: node.x, y: node.y },
+          type: 'node',
+          entityId: node.id,
+          priority: 5,
+          distancePx,
+        });
+      }
+    }
+  }
+
+  // If angle snapping is active, handle guideline intersections specially
   if (snapToAngles && angleOrigin && angleDirection) {
-    // Filter: keep only candidates that lie on the angle line
+    // Check if cursor is near any guideline
+    if (snapToGuidelines) {
+      const GUIDELINE_PROXIMITY_MM = 50; // Distance to activate guideline snap
+      const guidelines = generateNodeGuidelines(scene, excludeNodeIds, guidelineOrigin);
+
+      // For each guideline, compute intersection with angle line
+      for (const guideline of guidelines) {
+        const intersection = intersectAngleLineWithGuideline(
+          angleOrigin,
+          angleDirection,
+          guideline
+        );
+
+        if (!intersection) continue;
+
+        // Check if cursor is close enough to the guideline to activate snap
+        const distanceToGuideline = guideline.type === 'horizontal'
+          ? Math.abs(cursorWorldMm.y - guideline.value)
+          : Math.abs(cursorWorldMm.x - guideline.value);
+
+        if (distanceToGuideline <= GUIDELINE_PROXIMITY_MM) {
+          // Snap to the intersection point (locked, no drag)
+          const distanceMm = vec.distance(cursorWorldMm, intersection);
+          const distancePx = distanceMm * viewport.scale;
+
+          return {
+            snapped: true,
+            point: intersection,
+            candidate: {
+              point: intersection,
+              type: 'guideline',
+              entityId: guideline.nodeId,
+              priority: 11, // Boosted priority (guideline on angle line)
+              distancePx,
+              guideline,
+            },
+          };
+        }
+      }
+    }
+
+    // No guideline intersection - filter other candidates by angle line
     const filteredCandidates = candidates.filter((candidate) => {
-      return isPointOnAngleLine(candidate.point, angleOrigin, angleDirection);
+      // Skip guidelines here (handled above)
+      if (candidate.type === 'guideline') return false;
+
+      // Use tight tolerance for geometry snaps
+      const tolerance = 1.0; // 1mm for nodes, edges, midpoints, grid
+      return isPointOnAngleLine(candidate.point, angleOrigin, angleDirection, tolerance);
     });
 
     // If we found candidates on the angle line, use them (they have higher priority)
@@ -234,12 +309,62 @@ export function findSnapCandidate(
 }
 
 /**
+ * Intersect angle line with a guideline
+ * Returns the intersection point where the angle line crosses the guideline
+ */
+function intersectAngleLineWithGuideline(
+  angleOrigin: Vec2,
+  angleDirection: Vec2,
+  guideline: Guideline
+): Vec2 | null {
+  if (guideline.type === 'horizontal') {
+    // Horizontal guideline: y = constant
+    // Angle line: origin + t * direction
+    // Solve: origin.y + t * direction.y = guideline.value
+    
+    if (Math.abs(angleDirection.y) < 1e-9) {
+      // Angle line is horizontal, no intersection unless they're the same line
+      return null;
+    }
+
+    const t = (guideline.value - angleOrigin.y) / angleDirection.y;
+    
+    // Only return intersection if it's in the positive direction from origin
+    if (t < 0) return null;
+
+    return {
+      x: angleOrigin.x + t * angleDirection.x,
+      y: guideline.value,
+    };
+  } else {
+    // Vertical guideline: x = constant
+    // Solve: origin.x + t * direction.x = guideline.value
+    
+    if (Math.abs(angleDirection.x) < 1e-9) {
+      // Angle line is vertical, no intersection
+      return null;
+    }
+
+    const t = (guideline.value - angleOrigin.x) / angleDirection.x;
+    
+    // Only return intersection if it's in the positive direction from origin
+    if (t < 0) return null;
+
+    return {
+      x: guideline.value,
+      y: angleOrigin.y + t * angleDirection.y,
+    };
+  }
+}
+
+/**
  * Check if a point lies on an angle line (with tolerance)
  */
 function isPointOnAngleLine(
   point: Vec2,
   lineOrigin: Vec2,
-  lineDirection: Vec2
+  lineDirection: Vec2,
+  toleranceMm: number = 1.0
 ): boolean {
   // Vector from origin to point
   const toPoint = vec.sub(point, lineOrigin);
@@ -253,10 +378,7 @@ function isPointOnAngleLine(
   // Perpendicular distance from point to line
   const perpDistance = vec.distance(point, projectedPoint);
   
-  // Use a tight tolerance (1mm) to ensure the point is exactly on the line
-  const ANGLE_LINE_TOLERANCE_MM = 1.0;
-  
-  return perpDistance < ANGLE_LINE_TOLERANCE_MM;
+  return perpDistance < toleranceMm;
 }
 
 /**
@@ -275,7 +397,7 @@ function snapToGridPoint(worldMm: Vec2, viewport: Viewport): SnapCandidate | nul
   return {
     point: snappedPoint,
     type: 'grid',
-    priority: 1,
+    priority: 2, // Just above guidelines
     distancePx,
   };
 }

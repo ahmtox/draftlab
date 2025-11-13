@@ -6,7 +6,7 @@ import { screenToWorld, worldToScreen } from '../renderers/konva/viewport';
 import { findSnapCandidate } from '../core/geometry/snapping';
 import { hitTestWallNode, hitTestWalls } from '../core/geometry/hit-testing';
 import * as vec from '../core/math/vec';
-import { NODE_RADIUS_MM } from '../core/constants'; // ✅ Import the visual node radius
+import { NODE_RADIUS_MM } from '../core/constants';
 
 const MIN_MARQUEE_SIZE_PX = 5;
 const MIN_DRAG_DISTANCE_PX = 3;
@@ -63,8 +63,7 @@ export class SelectTool {
   handlePointerDown(screenPx: Vec2, scene: Scene, viewport: Viewport, modifiers: { ctrlKey: boolean; shiftKey: boolean }): void {
     const worldPos = screenToWorld(screenPx, viewport);
     
-    // ✅ Use the same radius as the visual node circles (world-space constant)
-    const nodeRadiusMm = NODE_RADIUS_MM; // 30mm in world space
+    const nodeRadiusMm = NODE_RADIUS_MM;
     const wallHitRadiusMm = 20 / viewport.scale;
 
     const hitWallId = hitTestWalls(worldPos, scene, wallHitRadiusMm);
@@ -73,16 +72,13 @@ export class SelectTool {
       const isSelectedWall = this.context.selectedWallIds.has(hitWallId);
 
       if (isSelectedWall) {
-        // ✅ FIX: Check for node hit FIRST, then decide behavior
         const hitResult = hitTestWallNode(worldPos, hitWallId, scene, nodeRadiusMm);
         
-        // If single wall selected and clicking on a node → single-node resize mode
         if (this.context.selectedWallIds.size === 1 && (hitResult === 'node-a' || hitResult === 'node-b')) {
           const wall = scene.walls.get(hitWallId)!;
           const nodeA = scene.nodes.get(wall.nodeAId)!;
           const nodeB = scene.nodes.get(wall.nodeBId)!;
 
-          // ✅ Use the dragged node's position as drag start (not cursor position)
           const draggedNode = hitResult === 'node-a' ? nodeA : nodeB;
 
           this.originalSceneSnapshot = {
@@ -97,8 +93,8 @@ export class SelectTool {
           this.context = {
             ...this.context,
             state: 'dragging',
-            dragMode: hitResult as DragMode, // ✅ 'node-a' or 'node-b'
-            dragStartMm: { x: draggedNode.x, y: draggedNode.y }, // ✅ Start from node position
+            dragMode: hitResult as DragMode,
+            dragStartMm: { x: draggedNode.x, y: draggedNode.y },
             activeSnaps: new Map(),
             snapCandidates: [],
           };
@@ -107,7 +103,6 @@ export class SelectTool {
           return;
         }
 
-        // Otherwise, multi-wall drag (or whole-wall drag)
         const dragMode = (hitResult === 'node-a' || hitResult === 'node-b' || hitResult === 'wall') 
           ? hitResult as DragMode 
           : 'wall';
@@ -130,11 +125,9 @@ export class SelectTool {
         const nodeA = scene.nodes.get(wall.nodeAId)!;
         const nodeB = scene.nodes.get(wall.nodeBId)!;
 
-        // Check if clicking on a specific node
         const hitResult = hitTestWallNode(worldPos, hitWallId, scene, nodeRadiusMm);
         const dragMode = (hitResult === 'node-a' || hitResult === 'node-b') ? hitResult as DragMode : 'wall';
 
-        // ✅ For single-node drag on newly selected wall, also use node position
         let dragStart = worldPos;
         if (dragMode === 'node-a') {
           dragStart = { x: nodeA.x, y: nodeA.y };
@@ -156,7 +149,7 @@ export class SelectTool {
           state: 'dragging',
           selectedWallIds: new Set([hitWallId]),
           dragMode,
-          dragStartMm: dragStart, // ✅ Use calculated drag start
+          dragStartMm: dragStart,
           offsetAMm: vec.sub(nodeA, worldPos),
           offsetBMm: vec.sub(nodeB, worldPos),
         };
@@ -164,7 +157,6 @@ export class SelectTool {
         this.onStateChange(this.context);
       }
     } else {
-      // Clicked on empty space
       const shouldClearSelection = !modifiers.ctrlKey && !modifiers.shiftKey;
 
       this.context = {
@@ -216,16 +208,9 @@ export class SelectTool {
     this.onStateChange(this.context);
   }
 
-  /**
-   * Get all nodes that should be excluded from snapping during drag.
-   * This includes:
-   * 1. All nodes from selected walls
-   * 2. All nodes from walls that share ANY node with selected walls (connected walls)
-   */
   private getExcludedNodeIds(scene: Scene): Set<string> {
     const excluded = new Set<string>();
 
-    // Add all nodes from selected walls
     for (const wallId of this.context.selectedWallIds) {
       const wall = scene.walls.get(wallId);
       if (!wall) continue;
@@ -234,7 +219,6 @@ export class SelectTool {
       excluded.add(wall.nodeBId);
     }
 
-    // Add nodes from connected walls
     const connectedNodeIds = new Set(excluded);
     for (const nodeId of connectedNodeIds) {
       for (const wall of scene.walls.values()) {
@@ -248,16 +232,9 @@ export class SelectTool {
     return excluded;
   }
 
-  /**
-   * Get all walls that should be excluded from edge/midpoint snapping during drag.
-   * This includes:
-   * 1. All selected walls
-   * 2. All walls that share ANY node with selected walls (connected walls)
-   */
   private getExcludedWallIds(scene: Scene): Set<string> {
     const excluded = new Set<string>(this.context.selectedWallIds);
 
-    // Get all nodes from selected walls
     const selectedNodeIds = new Set<string>();
     for (const wallId of this.context.selectedWallIds) {
       const wall = scene.walls.get(wallId);
@@ -266,7 +243,6 @@ export class SelectTool {
       selectedNodeIds.add(wall.nodeBId);
     }
 
-    // Exclude walls that share any node with selected walls
     for (const wall of scene.walls.values()) {
       if (selectedNodeIds.has(wall.nodeAId) || selectedNodeIds.has(wall.nodeBId)) {
         excluded.add(wall.id);
@@ -300,18 +276,14 @@ export class SelectTool {
       };
       this.onStateChange(this.context);
     } else if (this.context.state === 'dragging' && this.context.selectedWallIds.size > 0) {
-      // Calculate delta from drag start (which is now the node's original position for single-node mode)
       const delta = vec.sub(worldPos, this.context.dragStartMm!);
       const newNodePositions = new Map<string, Vec2>();
       const activeSnaps = new Map<string, string>();
       const snapCandidates: SnapCandidate[] = [];
 
-      // Get ALL nodes to exclude (selected walls + connected walls)
       const excludedNodeIds = this.getExcludedNodeIds(scene);
-      // Get ALL walls to exclude from edge/midpoint snapping
       const excludedWallIds = this.getExcludedWallIds(scene);
 
-      // Filter scene to remove excluded walls for snapping
       const filteredScene: Scene = {
         nodes: scene.nodes,
         walls: new Map(
@@ -319,7 +291,6 @@ export class SelectTool {
         ),
       };
 
-      // Handle single-node drag (node-a or node-b mode)
       if (this.context.dragMode === 'node-a' || this.context.dragMode === 'node-b') {
         const singleWallId = Array.from(this.context.selectedWallIds)[0];
         const wall = scene.walls.get(singleWallId);
@@ -328,13 +299,8 @@ export class SelectTool {
           const dragNodeId = this.context.dragMode === 'node-a' ? wall.nodeAId : wall.nodeBId;
           const anchorNodeId = this.context.dragMode === 'node-a' ? wall.nodeBId : wall.nodeAId;
           
-          // Get original position of the dragged node
           const originalDragPos = this.originalNodePositions.get(dragNodeId)!;
-          
-          // Calculate new position (original + delta)
           const tentativePos = vec.add(originalDragPos, delta);
-
-          // Apply snapping
           const tentativeScreenPx = worldToScreen(tentativePos, viewport);
           
           const snapResult = findSnapCandidate(
@@ -345,13 +311,13 @@ export class SelectTool {
               snapToGrid: true,
               snapToNodes: true,
               snapToEdges: true,
+              snapToGuidelines: true, // ✅ Enable guideline snapping
               excludeNodeIds: excludedNodeIds,
             }
           );
 
           const finalDragPos = snapResult.snapped ? snapResult.point : tentativePos;
 
-          // Track snap for visual feedback
           if (snapResult.snapped && snapResult.candidate) {
             if (snapResult.candidate.type === 'node' && snapResult.candidate.entityId) {
               activeSnaps.set(dragNodeId, snapResult.candidate.entityId);
@@ -359,7 +325,6 @@ export class SelectTool {
             snapCandidates.push(snapResult.candidate);
           }
 
-          // Only move the dragged node, keep anchor fixed
           const finalPositions = new Map<string, Vec2>();
           finalPositions.set(dragNodeId, finalDragPos);
           finalPositions.set(anchorNodeId, this.originalNodePositions.get(anchorNodeId)!);
@@ -377,11 +342,8 @@ export class SelectTool {
         }
       }
 
-      // Multi-wall or whole-wall drag: move all nodes together
       for (const [nodeId, originalPos] of this.originalNodePositions) {
         const tentativePos = vec.add(originalPos, delta);
-
-        // Use findSnapCandidate with filtered scene (excludes selected+connected walls)
         const tentativeScreenPx = worldToScreen(tentativePos, viewport);
         
         const snapResult = findSnapCandidate(
@@ -392,22 +354,20 @@ export class SelectTool {
             snapToGrid: true,
             snapToNodes: true,
             snapToEdges: true,
+            snapToGuidelines: true, // ✅ Enable guideline snapping
             excludeNodeIds: excludedNodeIds,
           }
         );
 
         if (snapResult.snapped && snapResult.candidate) {
-          // Use snapped position (works for ALL snap types)
           newNodePositions.set(nodeId, snapResult.point);
           
-          // Track snap for visual feedback
           if (snapResult.candidate.type === 'node' && snapResult.candidate.entityId) {
             activeSnaps.set(nodeId, snapResult.candidate.entityId);
           }
           
           snapCandidates.push(snapResult.candidate);
         } else {
-          // No snap - use tentative position
           newNodePositions.set(nodeId, tentativePos);
         }
       }
@@ -492,12 +452,9 @@ export class SelectTool {
       const nodePositions = new Map<string, { original: Vec2; final: Vec2 }>();
       const mergeTargets = new Map<string, string>();
 
-      // Get ALL nodes to exclude (selected walls + connected walls)
       const excludedNodeIds = this.getExcludedNodeIds(scene);
-      // Get ALL walls to exclude from edge/midpoint snapping
       const excludedWallIds = this.getExcludedWallIds(scene);
 
-      // Filter scene to remove excluded walls for snapping
       const filteredScene: Scene = {
         nodes: scene.nodes,
         walls: new Map(
@@ -505,7 +462,6 @@ export class SelectTool {
         ),
       };
 
-      // Handle single-node drag: only record position for dragged node
       if (this.context.dragMode === 'node-a' || this.context.dragMode === 'node-b') {
         const singleWallId = Array.from(this.context.selectedWallIds)[0];
         const wall = scene.walls.get(singleWallId);
@@ -514,7 +470,6 @@ export class SelectTool {
           const dragNodeId = this.context.dragMode === 'node-a' ? wall.nodeAId : wall.nodeBId;
           const originalDragPos = this.originalNodePositions.get(dragNodeId)!;
           
-          // Calculate final position
           const tentativePos = vec.add(originalDragPos, delta);
           const tentativeScreenPx = worldToScreen(tentativePos, viewport);
           
@@ -526,17 +481,16 @@ export class SelectTool {
               snapToGrid: true,
               snapToNodes: true,
               snapToEdges: true,
+              snapToGuidelines: true, // ✅ Enable guideline snapping
               excludeNodeIds: excludedNodeIds,
             }
           );
 
           let finalPos = tentativePos;
 
-          // Check if snapped to another node (merge candidate)
           if (snapResult.snapped && snapResult.candidate?.type === 'node' && snapResult.candidate.entityId) {
             const targetNodeId = snapResult.candidate.entityId;
             
-            // Only merge if target is not in excluded nodes
             if (!excludedNodeIds.has(targetNodeId) && targetNodeId !== dragNodeId) {
               mergeTargets.set(dragNodeId, targetNodeId);
               finalPos = snapResult.point;
@@ -547,11 +501,9 @@ export class SelectTool {
             finalPos = snapResult.point;
           }
 
-          // Only record the dragged node's movement
           nodePositions.set(dragNodeId, { original: originalDragPos, final: finalPos });
         }
       } else {
-        // Multi-wall or whole-wall drag: record all node movements
         for (const [nodeId, originalPos] of this.originalNodePositions) {
           const tentativePos = vec.add(originalPos, delta);
           const tentativeScreenPx = worldToScreen(tentativePos, viewport);
@@ -564,17 +516,16 @@ export class SelectTool {
               snapToGrid: true,
               snapToNodes: true,
               snapToEdges: true,
+              snapToGuidelines: true, // ✅ Enable guideline snapping
               excludeNodeIds: excludedNodeIds,
             }
           );
 
           let finalPos = tentativePos;
 
-          // Check if snapped to another node (merge candidate)
           if (snapResult.snapped && snapResult.candidate?.type === 'node' && snapResult.candidate.entityId) {
             const targetNodeId = snapResult.candidate.entityId;
             
-            // Only merge if target is not in excluded nodes
             if (!excludedNodeIds.has(targetNodeId) && targetNodeId !== nodeId) {
               mergeTargets.set(nodeId, targetNodeId);
               finalPos = snapResult.point;
@@ -589,7 +540,6 @@ export class SelectTool {
         }
       }
 
-      // Commit the drag
       this.onDragCommit(nodePositions, mergeTargets);
 
       this.context = {

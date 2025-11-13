@@ -43,7 +43,7 @@ export class WallTool {
     this.lastClickTime = now;
 
     if (this.context.state === 'idle') {
-      // Find snap candidate for first point (no angle wheel for first point)
+      // Find snap candidate for first point (enable guidelines, no angle wheel)
       const snapResult = findSnapCandidate(
         screenPx,
         scene,
@@ -53,6 +53,8 @@ export class WallTool {
           snapToNodes: true,
           snapToEdges: true,
           snapToAngles: false,
+          snapToGuidelines: true,
+          guidelineOrigin: undefined, // No origin yet
         }
       );
 
@@ -87,7 +89,7 @@ export class WallTool {
     const worldPos = screenToWorld(screenPx, viewport);
 
     if (this.context.state === 'idle') {
-      // Show hover point with snapping (no angle wheel in idle)
+      // Show hover point with snapping (enable guidelines, no angle wheel)
       const snapResult = findSnapCandidate(
         screenPx,
         scene,
@@ -97,6 +99,8 @@ export class WallTool {
           snapToNodes: true,
           snapToEdges: true,
           snapToAngles: false,
+          snapToGuidelines: true,
+          guidelineOrigin: undefined, // No origin for hover
         }
       );
 
@@ -113,7 +117,7 @@ export class WallTool {
         this.context.state = 'dragging';
       }
 
-      // Update preview with snapping (angle wheel if Shift held)
+      // Update preview with snapping (enable guidelines + angle wheel if Shift)
       const snapResult = findSnapCandidate(
         screenPx,
         scene,
@@ -123,7 +127,9 @@ export class WallTool {
           snapToNodes: true,
           snapToEdges: true,
           snapToAngles: shiftKey,
+          snapToGuidelines: true,
           angleOrigin: this.context.firstPointMm || undefined,
+          guidelineOrigin: this.context.firstPointMm || undefined, // Filter by first point
         }
       );
 
@@ -135,7 +141,7 @@ export class WallTool {
 
       this.onStateChange(this.context);
     } else if (this.context.state === 'dragging') {
-      // Continue updating preview while dragging (angle wheel if Shift held)
+      // Continue updating preview while dragging (enable guidelines + angle wheel if Shift)
       const snapResult = findSnapCandidate(
         screenPx,
         scene,
@@ -145,7 +151,9 @@ export class WallTool {
           snapToNodes: true,
           snapToEdges: true,
           snapToAngles: shiftKey,
+          snapToGuidelines: true,
           angleOrigin: this.context.firstPointMm || undefined,
+          guidelineOrigin: this.context.firstPointMm || undefined, // Filter by first point
         }
       );
 
@@ -172,7 +180,7 @@ export class WallTool {
 
     const worldPos = screenToWorld(screenPx, viewport);
 
-    // Find final snap position (with angle wheel if Shift held)
+    // Find final snap position (enable guidelines + angle wheel if Shift)
     const snapResult = findSnapCandidate(
       screenPx,
       scene,
@@ -182,7 +190,9 @@ export class WallTool {
         snapToNodes: true,
         snapToEdges: true,
         snapToAngles: shiftKey,
+        snapToGuidelines: true,
         angleOrigin: this.context.firstPointMm,
+        guidelineOrigin: this.context.firstPointMm, // Filter by first point
       }
     );
 

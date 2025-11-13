@@ -2,8 +2,9 @@ import React from 'react';
 import { Layer, Line, Circle, Text } from 'react-konva';
 import { memo } from 'react';
 import type { SnapCandidate } from '../../../core/geometry/snapping';
-import { worldToScreen } from '../viewport';
+import { worldToScreen, screenToWorld } from '../viewport';
 import { useStore } from '../../../state/store';
+import { getGuidelineVisibleBounds } from '../../../core/geometry/guides';
 
 interface GuidesLayerProps {
   snapCandidates: (SnapCandidate | null)[];
@@ -15,8 +16,6 @@ function GuidesLayerComponent({ snapCandidates }: GuidesLayerProps) {
   // Filter out null candidates
   const validCandidates = snapCandidates.filter((c): c is SnapCandidate => c !== null);
 
-  if (validCandidates.length === 0) return <Layer listening={false} />;
-
   // Choose color based on snap type
   const getSnapColor = (type: string): string => {
     switch (type) {
@@ -24,6 +23,8 @@ function GuidesLayerComponent({ snapCandidates }: GuidesLayerProps) {
       case 'grid': return '#10b981'; // green
       case 'edge': return '#f59e0b'; // amber
       case 'midpoint': return '#8b5cf6'; // purple
+      case 'angle': return '#ef4444'; // red
+      case 'guideline': return '#ec4899'; // pink
       default: return '#6b7280'; // gray
     }
   };
@@ -34,8 +35,51 @@ function GuidesLayerComponent({ snapCandidates }: GuidesLayerProps) {
   // Crosshair lines
   const crosshairSize = 12;
 
+  // Compute viewport bounds in world coordinates for guideline rendering
+  const viewportBounds = React.useMemo(() => {
+    const topLeft = screenToWorld({ x: 0, y: 0 }, viewport);
+    const bottomRight = screenToWorld(
+      { x: window.innerWidth, y: window.innerHeight },
+      viewport
+    );
+
+    return {
+      minX: Math.min(topLeft.x, bottomRight.x),
+      maxX: Math.max(topLeft.x, bottomRight.x),
+      minY: Math.min(topLeft.y, bottomRight.y),
+      maxY: Math.max(topLeft.y, bottomRight.y),
+    };
+  }, [viewport]);
+
+  // Extract guideline candidates
+  const guidelineCandidates = validCandidates.filter(c => c.type === 'guideline' && c.guideline);
+
   return (
     <Layer listening={false}>
+      {/* Render guidelines (dashed pink lines) */}
+      {guidelineCandidates.map((snapCandidate, index) => {
+        if (!snapCandidate.guideline) return null;
+
+        const bounds = getGuidelineVisibleBounds(snapCandidate.guideline, viewportBounds);
+        if (!bounds) return null;
+
+        const startScreen = worldToScreen(bounds.start, viewport);
+        const endScreen = worldToScreen(bounds.end, viewport);
+
+        return (
+          <Line
+            key={`guideline-${index}`}
+            points={[startScreen.x, startScreen.y, endScreen.x, endScreen.y]}
+            stroke="#ec4899"
+            strokeWidth={1}
+            dash={[8, 4]}
+            listening={false}
+            opacity={0.6}
+          />
+        );
+      })}
+
+      {/* Render snap indicators */}
       {validCandidates.map((snapCandidate, index) => {
         const snapPointScreen = worldToScreen(snapCandidate.point, viewport);
         const color = getSnapColor(snapCandidate.type);
