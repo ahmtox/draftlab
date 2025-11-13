@@ -18,17 +18,17 @@ import * as vec from '../math/vec';
 // Configuration
 // ============================================================================
 
-const DEBUG = false;
+const DEBUG = true;
 const EPSILON = 1e-9;
 const MAX_MITER_LENGTH_RATIO = 10; // Prevent infinite spikes at shallow angles
-const COLLINEAR_ANGLE_THRESHOLD = 0.0175; // ~1 degree in radians
+const COLLINEAR_ANGLE_THRESHOLD = 0.0001; // ~0.006° - extremely tight for true collinearity
 
 // ============================================================================
 // Logging Utilities
 // ============================================================================
 
 const log = {
-  step: (stepNum: number, title: string, ...args: any[]) => {
+  step: (stepNum: number | string, title: string, ...args: any[]) => {
     if (DEBUG) console.log(`\n[STEP ${stepNum}] ${title}`, ...args);
   },
   substep: (label: string, ...args: any[]) => {
@@ -100,7 +100,7 @@ function areWallsCollinear(wall1: Wall, wall2: Wall, node: Node, scene: Scene): 
   const dotProduct = vec.dot(dir1, dir2);
   const isOpposite = Math.abs(dotProduct + 1.0) < COLLINEAR_ANGLE_THRESHOLD;
 
-  if (isOpposite) {
+  if (isOpposite && DEBUG) {
     log.detail(`Walls ${formatWallId(wall1.id)} and ${formatWallId(wall2.id)} are collinear (dot=${dotProduct.toFixed(4)})`);
   }
 
@@ -212,7 +212,9 @@ function clampMiterLength(
   const distance = vec.distance(node, point);
 
   if (distance > maxLength) {
-    log.detail(`Clamped: distance ${distance.toFixed(1)}mm > max ${maxLength.toFixed(1)}mm`);
+    if (DEBUG) {
+      log.detail(`Clamped: distance ${distance.toFixed(1)}mm > max ${maxLength.toFixed(1)}mm`);
+    }
     return null;
   }
 
@@ -279,7 +281,8 @@ interface EdgeIntersection {
 
 /**
  * Compute corner points for all walls meeting at a node using segment intersection
- * FIXED: Now handles collinear walls (180° apart) properly
+ * FIXED: Proper collinear wall handling for 2-wall straight-through connections
+ * FIXED: Non-collinear wall gets apex from collinear walls' non-intersecting edges
  */
 function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, WallCorners> {
   log.section(`Computing Corners for Node ${formatWallId(node.id)}`);
@@ -320,6 +323,27 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
     collinearWallIds.add(wall1.id);
     collinearWallIds.add(wall2.id);
     log.substep(`Collinear pair: ${formatWallId(wall1.id)} ↔ ${formatWallId(wall2.id)}`);
+  }
+
+  // ============================================================
+  // SPECIAL CASE: EXACTLY 2 walls that are collinear = straight-through
+  // ============================================================
+  if (incidentWalls.length === 2 && collinearPairs.length === 1) {
+    log.step('SPECIAL', 'Detected 2-wall straight-through (collinear) - using butt joint');
+    
+    // For straight-through walls, just use the base offset edges (butt joint)
+    // Don't try to intersect anything - they pass through cleanly
+    for (const { wall, leftEdge, rightEdge } of wallEdges) {
+      result.set(wall.id, {
+        left: leftEdge.start,
+        right: rightEdge.start,
+        apex: null,
+      });
+      log.substep(`${formatWallId(wall.id)}: left=${formatPoint(leftEdge.start)}, right=${formatPoint(rightEdge.start)}`);
+    }
+
+    log.result('Straight-through butt joints assigned');
+    return result;
   }
 
   // ============================================================
@@ -438,7 +462,7 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
   log.result('Farthest intersections selected');
 
   // ============================================================
-  // STEP 3.5: Find non-intersecting edges (before Step 4 assigns them)
+  // STEP 3.5: Find non-intersecting edges (before Step 5 assigns them)
   // ============================================================
   log.step(3.5, 'Identifying non-intersecting edges');
 
@@ -469,182 +493,20 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
   }
 
   log.result('Non-intersecting edges identified');
+
   // ============================================================
-  // STEP 4: Handle collinear wall apex points (BEFORE Step 5)
+  // STEP 4: Collinear handling is SKIPPED (handled in Step SPECIAL above)
   // ============================================================
   log.step(4, 'Computing apex points for walls with collinear neighbors');
-
-  // Store collinear apex point for later use
-  let collinearApex: Vec2 | null = null;
-
-  if (collinearPairs.length > 0) {
-    log.substep(`Found ${collinearPairs.length} collinear pair(s)`);
-    
-    // Find non-intersecting edges from collinear walls
-    const collinearNonIntersecting = nonIntersectingEdges.filter(e => collinearWallIds.has(e.wallId));
-    
-    log.substep(`Non-intersecting edges from collinear walls: ${collinearNonIntersecting.length}`);
-    for (const edge of collinearNonIntersecting) {
-      log.detail(`  - ${formatWallId(edge.wallId)}.${edge.edge}`);
-    }
-
-    if (collinearNonIntersecting.length >= 2) {
-      log.substep(`Attempting to intersect ${collinearNonIntersecting.length} collinear non-intersecting edges`);
-      
-      // Try to find apex by intersecting non-intersecting edges from collinear walls
-      for (let i = 0; i < collinearNonIntersecting.length; i++) {
-        for (let j = i + 1; j < collinearNonIntersecting.length; j++) {
-          const edgeA = collinearNonIntersecting[i];
-          const edgeB = collinearNonIntersecting[j];
-
-          log.detail(`  Testing: ${formatWallId(edgeA.wallId)}.${edgeA.edge} vs ${formatWallId(edgeB.wallId)}.${edgeB.edge}`);
-
-          // Only intersect edges from different walls
-          if (edgeA.wallId === edgeB.wallId) {
-            log.detail(`    ❌ Same wall, skipping`);
-            continue;
-          }
-
-          // Check if the two edges are from collinear walls
-          const wallA = scene.walls.get(edgeA.wallId)!;
-          const wallB = scene.walls.get(edgeB.wallId)!;
-          
-          const isCollinear = areWallsCollinear(wallA, wallB, node, scene);
-          log.detail(`    Collinearity check: ${isCollinear ? '✅ YES' : '❌ NO'}`);
-          
-          if (!isCollinear) continue;
-
-          log.detail(`    Computing line intersection...`);
-          log.detail(`      Line A: origin=${formatPoint(edgeA.line.point)}, dir=${formatPoint(edgeA.line.direction)}`);
-          log.detail(`      Line B: origin=${formatPoint(edgeB.line.point)}, dir=${formatPoint(edgeB.line.direction)}`);
-
-          const apex = intersectLines(edgeA.line, edgeB.line);
-
-          log.detail(`    Intersection result: ${formatPoint(apex)}`);
-
-          if (apex) {
-            // Clamp using average thickness
-            const avgThickness = (wallA.thicknessMm + wallB.thicknessMm) / 2;
-            log.detail(`    Average thickness: ${avgThickness.toFixed(1)}mm`);
-            
-            const distance = vec.distance(node, apex);
-            log.detail(`    Distance from node: ${distance.toFixed(1)}mm`);
-            
-            collinearApex = clampMiterLength(node, apex, avgThickness);
-            
-            log.detail(`    Clamped result: ${formatPoint(collinearApex)}`);
-            
-            if (collinearApex) {
-              log.substep(
-                `✅ Collinear apex found: ${formatWallId(edgeA.wallId)}.${edgeA.edge} ∩ ${formatWallId(edgeB.wallId)}.${edgeB.edge} = ${formatPoint(collinearApex)}`
-              );
-
-              // Update the collinear walls' missing corners
-              const cornersA = result.get(edgeA.wallId)!;
-              const cornersB = result.get(edgeB.wallId)!;
-
-              if (edgeA.edge === 'left' && !cornersA.left) {
-                cornersA.left = collinearApex;
-                log.substep(`  └─ Updated ${formatWallId(edgeA.wallId)}.left = ${formatPoint(collinearApex)}`);
-              } else if (edgeA.edge === 'right' && !cornersA.right) {
-                cornersA.right = collinearApex;
-                log.substep(`  └─ Updated ${formatWallId(edgeA.wallId)}.right = ${formatPoint(collinearApex)}`);
-              }
-
-              if (edgeB.edge === 'left' && !cornersB.left) {
-                cornersB.left = collinearApex;
-                log.substep(`  └─ Updated ${formatWallId(edgeB.wallId)}.left = ${formatPoint(collinearApex)}`);
-              } else if (edgeB.edge === 'right' && !cornersB.right) {
-                cornersB.right = collinearApex;
-                log.substep(`  └─ Updated ${formatWallId(edgeB.wallId)}.right = ${formatPoint(collinearApex)}`);
-              }
-
-              break;
-            } else {
-              log.detail(`    ❌ Clamping rejected the point (too far from node)`);
-            }
-          } else {
-            log.detail(`    ❌ Lines are parallel (collinear edges on same line)`);
-            // For collinear walls, the non-intersecting edges are on the same line
-            // Use the OFFSET EDGE origin as the apex point (not the centerline node)
-            // This is where the thickened edges meet, maintaining proper wall thickness
-            log.detail(`    Using offset edge origin as apex for collinear walls`);
-            
-            // Use the origin of one of the offset edges (they're the same point)
-            collinearApex = { x: edgeA.line.point.x, y: edgeA.line.point.y };
-            
-            log.substep(
-              `✅ Collinear apex at offset edge: ${formatWallId(edgeA.wallId)}.${edgeA.edge} & ${formatWallId(edgeB.wallId)}.${edgeB.edge} = ${formatPoint(collinearApex)}`
-            );
-
-            // Update the collinear walls' missing corners with offset edge origin
-            const cornersA = result.get(edgeA.wallId)!;
-            const cornersB = result.get(edgeB.wallId)!;
-
-            if (edgeA.edge === 'left' && !cornersA.left) {
-              cornersA.left = collinearApex;
-              log.substep(`  └─ Updated ${formatWallId(edgeA.wallId)}.left = ${formatPoint(collinearApex)}`);
-            } else if (edgeA.edge === 'right' && !cornersA.right) {
-              cornersA.right = collinearApex;
-              log.substep(`  └─ Updated ${formatWallId(edgeA.wallId)}.right = ${formatPoint(collinearApex)}`);
-            }
-
-            if (edgeB.edge === 'left' && !cornersB.left) {
-              cornersB.left = collinearApex;
-              log.substep(`  └─ Updated ${formatWallId(edgeB.wallId)}.left = ${formatPoint(collinearApex)}`);
-            } else if (edgeB.edge === 'right' && !cornersB.right) {
-              cornersB.right = collinearApex;
-              log.substep(`  └─ Updated ${formatWallId(edgeB.wallId)}.right = ${formatPoint(collinearApex)}`);
-            }
-
-            break;
-          }
-        }
-        if (collinearApex) break;
-      }
-    } else {
-      log.substep(`❌ Not enough non-intersecting edges from collinear walls (need >= 2, have ${collinearNonIntersecting.length})`);
-    }
-
-    // Now assign apex to non-collinear walls that have both edges intersected
-    if (collinearApex) {
-      log.substep(`Assigning collinear apex to non-collinear walls...`);
-      
-      for (const { wall } of wallEdges) {
-        if (collinearWallIds.has(wall.id)) {
-          log.detail(`  Skipping ${formatWallId(wall.id)} (is collinear)`);
-          continue;
-        }
-
-        const corners = result.get(wall.id)!;
-        
-        log.detail(`  Checking ${formatWallId(wall.id)}: left=${formatPoint(corners.left)}, right=${formatPoint(corners.right)}, apex=${formatPoint(corners.apex)}`);
-        
-        // If this wall has both edges intersected, give it the collinear apex
-        if (corners.left && corners.right && !corners.apex) {
-          corners.apex = collinearApex;
-          log.substep(`  ✅ ${formatWallId(wall.id)}: apex = collinear intersection = ${formatPoint(collinearApex)}`);
-        } else {
-          if (!corners.left) log.detail(`    ❌ Missing left corner`);
-          if (!corners.right) log.detail(`    ❌ Missing right corner`);
-          if (corners.apex) log.detail(`    ❌ Already has apex`);
-        }
-      }
-    } else {
-      log.substep(`❌ No collinear apex found, cannot assign to non-collinear walls`);
-    }
-  } else {
-    log.substep(`No collinear pairs found`);
-  }
-
-  log.result('Collinear apex points computed');
+  log.substep(`Found ${collinearPairs.length} collinear pair(s) (already handled if only 2 walls)`);
+  log.result('Collinear apex points computed (skipped for 2-wall case)');
 
   // ============================================================
   // STEP 5: Extend non-intersecting edges to infinite lines
   // ============================================================
   log.step(5, 'Extending remaining non-intersecting edges to infinite lines');
 
-  // Try to intersect non-intersecting edges as infinite lines (but skip collinear pairs already handled)
+  // Try to intersect non-intersecting edges as infinite lines
   for (let i = 0; i < nonIntersectingEdges.length; i++) {
     for (let j = i + 1; j < nonIntersectingEdges.length; j++) {
       const edgeA = nonIntersectingEdges[i];
@@ -652,13 +514,6 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
 
       // Don't intersect two edges from the same wall
       if (edgeA.wallId === edgeB.wallId) continue;
-
-      // Skip if both are from collinear walls (already handled in Step 4)
-      if (collinearWallIds.has(edgeA.wallId) && collinearWallIds.has(edgeB.wallId)) {
-        const wallA = scene.walls.get(edgeA.wallId)!;
-        const wallB = scene.walls.get(edgeB.wallId)!;
-        if (areWallsCollinear(wallA, wallB, node, scene)) continue;
-      }
 
       const intersection = intersectLines(edgeA.line, edgeB.line);
 
@@ -703,7 +558,6 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
   }
 
   // Special case: Check if ALL walls are collinear (cross junction: 4 walls forming +)
-  // In this case, all collinear walls should get apex at node center
   const allWallsCollinear = incidentWalls.length >= 4 && 
                             collinearWallIds.size === incidentWalls.length;
 
@@ -735,7 +589,7 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
   }
 
   for (const [wallId, corners] of result) {
-    // Skip if already has apex (assigned in cross junction case above)
+    // Skip if already has apex
     if (corners.apex) continue;
 
     // If both left and right are intersected, we need an apex
@@ -746,18 +600,92 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
 
       if (!leftFromSegment || !rightFromSegment) {
         log.substep(
-          `${formatWallId(wallId)}: has both corners but at least one is from infinite extension (left: ${leftFromSegment ? 'segment' : 'infinite'}, right: ${rightFromSegment ? 'segment' : 'infinite'}), no apex`
+          `${formatWallId(wallId)}: has both corners but at least one is from infinite extension, no apex`
         );
         continue;
       }
 
       log.substep(`${formatWallId(wallId)}: both edges intersected via segments, checking for apex`);
 
-      // CASE 1: Try to find apex from non-intersecting edges of OTHER walls
+      // ✅ FIX: Look for apex from collinear walls' non-intersecting edges FIRST
+      if (collinearWallIds.size > 0 && !collinearWallIds.has(wallId)) {
+        log.detail(`Wall ${formatWallId(wallId)} is non-collinear, looking for collinear walls' non-intersecting edges`);
+        
+        // Get non-intersecting edges from collinear walls only
+        const collinearNonIntersecting = nonIntersectingEdges.filter(e => collinearWallIds.has(e.wallId));
+        
+        log.detail(`Found ${collinearNonIntersecting.length} non-intersecting edges from collinear walls:`);
+        for (const edge of collinearNonIntersecting) {
+          log.detail(`  - ${formatWallId(edge.wallId)}.${edge.edge}: origin=${formatPoint(edge.line.point)}, dir=(${edge.line.direction.x.toFixed(3)}, ${edge.line.direction.y.toFixed(3)})`);
+        }
+        
+        if (collinearNonIntersecting.length === 2) {
+          log.detail(`Attempting to intersect the 2 collinear non-intersecting edges...`);
+          
+          // ✅ CHECK: If both edges start at the same point, that's the apex!
+          const edge1 = collinearNonIntersecting[0];
+          const edge2 = collinearNonIntersecting[1];
+          
+          if (almostEqual(edge1.line.point, edge2.line.point)) {
+            log.detail(`✅ Both edges share the same origin - using as apex!`);
+            const apex = edge1.line.point;
+            
+            if (!almostEqual(apex, corners.left) && !almostEqual(apex, corners.right)) {
+              const wall = scene.walls.get(wallId)!;
+              const clampedApex = clampMiterLength(node, apex, wall.thicknessMm);
+              
+              log.detail(`Shared origin apex: ${formatPoint(apex)}`);
+              log.detail(`After clamp: ${formatPoint(clampedApex)}`);
+              log.detail(`Distance from node: ${vec.distance(node, apex).toFixed(1)}mm`);
+              log.detail(`Max allowed: ${(wall.thicknessMm * MAX_MITER_LENGTH_RATIO).toFixed(1)}mm`);
+              
+              corners.apex = clampedApex;
+              log.substep(`${formatWallId(wallId)}: ✅ apex from collinear walls' shared origin = ${formatPoint(corners.apex)}`);
+              continue; // Found apex, move to next wall
+            } else {
+              log.detail(`❌ Apex rejected: too close to existing corners`);
+            }
+          } else {
+            // Try normal line intersection
+            const apex = intersectLines(edge1.line, edge2.line);
+            
+            log.detail(`Intersection result: ${formatPoint(apex)}`);
+            
+            if (apex) {
+              log.detail(`Checking if apex is different from corners:`);
+              log.detail(`  - corners.left = ${formatPoint(corners.left)}`);
+              log.detail(`  - corners.right = ${formatPoint(corners.right)}`);
+              log.detail(`  - almostEqual(apex, left) = ${almostEqual(apex, corners.left)}`);
+              log.detail(`  - almostEqual(apex, right) = ${almostEqual(apex, corners.right)}`);
+              
+              if (!almostEqual(apex, corners.left) && !almostEqual(apex, corners.right)) {
+                const wall = scene.walls.get(wallId)!;
+                const clampedApex = clampMiterLength(node, apex, wall.thicknessMm);
+                
+                log.detail(`Before clamp: ${formatPoint(apex)}`);
+                log.detail(`After clamp: ${formatPoint(clampedApex)}`);
+                log.detail(`Distance from node: ${vec.distance(node, apex).toFixed(1)}mm`);
+                log.detail(`Max allowed: ${(wall.thicknessMm * MAX_MITER_LENGTH_RATIO).toFixed(1)}mm`);
+                
+                corners.apex = clampedApex;
+                log.substep(`${formatWallId(wallId)}: ✅ apex from collinear walls' edges = ${formatPoint(corners.apex)}`);
+                continue; // Found apex, move to next wall
+              } else {
+                log.detail(`❌ Apex rejected: too close to existing corners`);
+              }
+            } else {
+              log.detail(`❌ No intersection found (lines are parallel)`);
+            }
+          }
+        } else {
+          log.detail(`❌ Need exactly 2 edges, found ${collinearNonIntersecting.length}`);
+        }
+      }
+      
+      // Try to find apex from non-intersecting edges of OTHER walls (original logic)
       const otherNonIntersecting = nonIntersectingEdges.filter(e => e.wallId !== wallId);
 
       if (otherNonIntersecting.length >= 2) {
-        // Try to find apex by intersecting two non-intersecting edges from other walls
         for (let i = 0; i < otherNonIntersecting.length; i++) {
           for (let j = i + 1; j < otherNonIntersecting.length; j++) {
             const edgeA = otherNonIntersecting[i];
@@ -776,10 +704,8 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
         }
       }
 
-      // CASE 2: If no apex found and this is a multi-wall junction (3+ walls),
-      // use the shared node as the apex point
+      // If no apex found and this is a multi-wall junction (3+ walls), use node center
       if (!corners.apex && incidentWalls.length >= 3) {
-        // Check if all walls at this node have both edges intersected VIA SEGMENTS (not extensions)
         let allFullyIntersectedViaSegments = true;
         for (const { wall } of wallEdges) {
           const c = result.get(wall.id)!;
@@ -796,12 +722,6 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
           corners.apex = { x: node.x, y: node.y };
           log.substep(`${formatWallId(wallId)}: apex = node position (all edges intersected via segments) = ${formatPoint(corners.apex)}`);
         }
-      }
-    } else {
-      // Wall doesn't have both edges intersected
-      // Only log if it's collinear (for debugging purposes)
-      if (collinearWallIds.has(wallId)) {
-        log.substep(`${formatWallId(wallId)}: collinear wall without both edges intersected, no apex`);
       }
     }
   }
@@ -851,7 +771,7 @@ export function buildWallPolygon(wall: Wall, scene: Scene): Vec2[] {
   const baseLeftB = vec.add(nodeB, vec.scale(perpAB, halfThickness));
   const baseRightB = vec.sub(nodeB, vec.scale(perpAB, halfThickness));
 
-  // Get mitered corners (now works correctly for both nodeA and nodeB)
+  // Get mitered corners
   const cornersAtA = computeNodeCornersSegmentBased(nodeA, scene).get(wall.id);
   const cornersAtB = computeNodeCornersSegmentBased(nodeB, scene).get(wall.id);
 
