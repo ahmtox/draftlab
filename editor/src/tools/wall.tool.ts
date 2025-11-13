@@ -7,7 +7,7 @@ import { findSnapCandidate } from '../core/geometry/snapping';
 import { MIN_WALL_LENGTH_MM } from '../core/constants';
 import * as vec from '../core/math/vec';
 
-export type WallToolState = 'idle' | 'firstPoint' | 'dragging';
+export type WallToolState = 'idle' | 'firstPoint' | 'dragging' | 'click-pending';
 
 export interface WallToolContext {
   state: WallToolState;
@@ -17,6 +17,8 @@ export interface WallToolContext {
   snapCandidate: SnapCandidate | null;
   firstNodeId: string | null;
 }
+
+const MIN_DRAG_DISTANCE_PX = 5; // Minimum screen-space distance to consider it a drag
 
 export class WallTool {
   private context: WallToolContext = {
@@ -30,6 +32,7 @@ export class WallTool {
 
   private lastClickTime: number = 0;
   private readonly DOUBLE_CLICK_THRESHOLD_MS = 300;
+  private mouseDownScreenPos: Vec2 | null = null; // Track mouse down position in screen space
 
   constructor(
     private onStateChange: (ctx: WallToolContext) => void,
@@ -63,8 +66,11 @@ export class WallTool {
       // Extract node ID if we snapped to a node
       const firstNodeId = snapResult.candidate?.type === 'node' ? snapResult.candidate.entityId || null : null;
 
+      // ✅ Enter click-pending state instead of firstPoint immediately
+      this.mouseDownScreenPos = { x: screenPx.x, y: screenPx.y };
+
       this.context = {
-        state: 'firstPoint',
+        state: 'click-pending',
         firstPointMm: finalPoint,
         currentPointMm: finalPoint,
         hoverPointMm: null,
@@ -107,6 +113,43 @@ export class WallTool {
       this.context = {
         ...this.context,
         hoverPointMm: snapResult.snapped ? snapResult.point : worldPos,
+        snapCandidate: snapResult.candidate || null,
+      };
+
+      this.onStateChange(this.context);
+    } else if (this.context.state === 'click-pending') {
+      // ✅ Check if mouse has moved far enough to be considered a drag
+      if (this.mouseDownScreenPos && buttons === 1) {
+        const dx = screenPx.x - this.mouseDownScreenPos.x;
+        const dy = screenPx.y - this.mouseDownScreenPos.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance > MIN_DRAG_DISTANCE_PX) {
+          // Transition to dragging mode
+          this.context.state = 'dragging';
+          this.mouseDownScreenPos = null; // Clear mouse down position
+        }
+      }
+
+      // Update preview with snapping (enable guidelines + angle wheel if Shift)
+      const snapResult = findSnapCandidate(
+        screenPx,
+        scene,
+        viewport,
+        {
+          snapToGrid: true,
+          snapToNodes: true,
+          snapToEdges: true,
+          snapToAngles: shiftKey,
+          snapToGuidelines: true,
+          angleOrigin: this.context.firstPointMm || undefined,
+          guidelineOrigin: this.context.firstPointMm || undefined, // Filter by first point
+        }
+      );
+
+      this.context = {
+        ...this.context,
+        currentPointMm: snapResult.snapped ? snapResult.point : worldPos,
         snapCandidate: snapResult.candidate || null,
       };
 
@@ -168,7 +211,12 @@ export class WallTool {
   }
 
   handlePointerUp(screenPx: Vec2, scene: Scene, viewport: Viewport, shiftKey: boolean): void {
-    if (this.context.state === 'dragging') {
+    if (this.context.state === 'click-pending') {
+      // ✅ Mouse up without significant drag - treat as first click
+      this.context.state = 'firstPoint';
+      this.mouseDownScreenPos = null;
+      this.onStateChange(this.context);
+    } else if (this.context.state === 'dragging') {
       // Drag-to-create: commit on mouse up
       this.commitWall(screenPx, scene, viewport, shiftKey);
     }
@@ -230,6 +278,7 @@ export class WallTool {
       snapCandidate: null,
       firstNodeId: null,
     };
+    this.mouseDownScreenPos = null;
     this.onStateChange(this.context);
   }
 

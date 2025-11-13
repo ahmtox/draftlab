@@ -18,7 +18,7 @@ import * as vec from '../math/vec';
 // Configuration
 // ============================================================================
 
-const DEBUG = true;
+const DEBUG = false;
 const EPSILON = 1e-9;
 const MAX_MITER_LENGTH_RATIO = 10; // Prevent infinite spikes at shallow angles
 const COLLINEAR_ANGLE_THRESHOLD = 0.0001; // ~0.006° - extremely tight for true collinearity
