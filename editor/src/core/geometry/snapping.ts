@@ -5,7 +5,7 @@ import type { Viewport } from '../../renderers/konva/viewport';
 import { screenToWorld } from '../../renderers/konva/viewport';
 import { DEFAULT_TOL } from '../constants';
 
-export type SnapType = 'node' | 'grid' | 'edge' | 'midpoint';
+export type SnapType = 'node' | 'grid' | 'edge' | 'midpoint' | 'angle';
 
 export type SnapCandidate = {
   point: Vec2;          // mm world coords
@@ -32,6 +32,8 @@ export function findSnapCandidate(
     snapToGrid?: boolean;
     snapToNodes?: boolean;
     snapToEdges?: boolean;
+    snapToAngles?: boolean;
+    angleOrigin?: Vec2;
     excludeNodeIds?: Set<string>;
   } = {}
 ): SnapResult {
@@ -39,6 +41,8 @@ export function findSnapCandidate(
     snapToGrid = true,
     snapToNodes = true,
     snapToEdges = true,
+    snapToAngles = false,
+    angleOrigin = null,
     excludeNodeIds = new Set(),
   } = options;
 
@@ -47,6 +51,30 @@ export function findSnapCandidate(
 
   // Convert snap radius from screen pixels to world mm
   const snapRadiusMm = DEFAULT_TOL.snapPx / viewport.scale;
+
+  // If angle snapping is active, compute the snapped angle first
+  let snappedAngleRad: number | null = null;
+  let angleDirection: Vec2 | null = null;
+
+  if (snapToAngles && angleOrigin) {
+    const ANGLE_INCREMENT_DEG = 15;
+    const ANGLE_INCREMENT_RAD = (ANGLE_INCREMENT_DEG * Math.PI) / 180;
+
+    const delta = vec.sub(cursorWorldMm, angleOrigin);
+    const distance = vec.length(delta);
+
+    if (distance >= 1) {
+      const currentAngle = Math.atan2(delta.y, delta.x);
+      snappedAngleRad = Math.round(currentAngle / ANGLE_INCREMENT_RAD) * ANGLE_INCREMENT_RAD;
+      angleDirection = {
+        x: Math.cos(snappedAngleRad),
+        y: Math.sin(snappedAngleRad),
+      };
+    }
+  }
+
+  // Collect all snap candidates within snap radius
+  // (we'll filter by angle line later if angle snapping is active)
 
   // Grid snapping (priority 1)
   if (snapToGrid) {
@@ -76,7 +104,7 @@ export function findSnapCandidate(
     }
   }
 
-  // Edge snapping (priority 3) - snap to wall centerlines
+  // Edge snapping (priority 3)
   if (snapToEdges) {
     for (const wall of scene.walls.values()) {
       const nodeA = scene.nodes.get(wall.nodeAId);
@@ -128,7 +156,60 @@ export function findSnapCandidate(
     }
   }
 
-  // Select best candidate: highest priority, then closest distance
+  // If angle snapping is active, filter candidates by angle line
+  if (snapToAngles && angleOrigin && angleDirection) {
+    // Filter: keep only candidates that lie on the angle line
+    const filteredCandidates = candidates.filter((candidate) => {
+      return isPointOnAngleLine(candidate.point, angleOrigin, angleDirection);
+    });
+
+    // If we found candidates on the angle line, use them (they have higher priority)
+    if (filteredCandidates.length > 0) {
+      // Boost priority of angle-aligned candidates
+      filteredCandidates.forEach(c => c.priority += 10);
+      
+      // Sort and return best
+      filteredCandidates.sort((a, b) => {
+        if (a.priority !== b.priority) {
+          return b.priority - a.priority;
+        }
+        return a.distancePx - b.distancePx;
+      });
+
+      return {
+        snapped: true,
+        point: filteredCandidates[0].point,
+        candidate: filteredCandidates[0],
+      };
+    }
+
+    // No candidates on angle line - snap to angle-constrained cursor position
+    const delta = vec.sub(cursorWorldMm, angleOrigin);
+    const distance = vec.length(delta);
+
+    if (distance >= 1) {
+      const angleSnappedPoint = {
+        x: angleOrigin.x + distance * angleDirection.x,
+        y: angleOrigin.y + distance * angleDirection.y,
+      };
+
+      const distanceMm = vec.distance(cursorWorldMm, angleSnappedPoint);
+      const distancePx = distanceMm * viewport.scale;
+
+      return {
+        snapped: true,
+        point: angleSnappedPoint,
+        candidate: {
+          point: angleSnappedPoint,
+          type: 'angle',
+          priority: 9,
+          distancePx,
+        },
+      };
+    }
+  }
+
+  // No angle snapping - use normal priority sorting
   if (candidates.length === 0) {
     return {
       snapped: false,
@@ -150,6 +231,32 @@ export function findSnapCandidate(
     point: best.point,
     candidate: best,
   };
+}
+
+/**
+ * Check if a point lies on an angle line (with tolerance)
+ */
+function isPointOnAngleLine(
+  point: Vec2,
+  lineOrigin: Vec2,
+  lineDirection: Vec2
+): boolean {
+  // Vector from origin to point
+  const toPoint = vec.sub(point, lineOrigin);
+  
+  // Project onto the line direction
+  const projection = vec.dot(toPoint, lineDirection);
+  
+  // Point on the line at the projection distance
+  const projectedPoint = vec.add(lineOrigin, vec.scale(lineDirection, projection));
+  
+  // Perpendicular distance from point to line
+  const perpDistance = vec.distance(point, projectedPoint);
+  
+  // Use a tight tolerance (1mm) to ensure the point is exactly on the line
+  const ANGLE_LINE_TOLERANCE_MM = 1.0;
+  
+  return perpDistance < ANGLE_LINE_TOLERANCE_MM;
 }
 
 /**

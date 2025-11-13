@@ -36,14 +36,14 @@ export class WallTool {
     private onCommit: (startMm: Vec2, endMm: Vec2, startNodeId: string | null, endNodeId: string | null) => void
   ) {}
 
-  handlePointerDown(screenPx: Vec2, scene: Scene, viewport: Viewport): void {
+  handlePointerDown(screenPx: Vec2, scene: Scene, viewport: Viewport, shiftKey: boolean): void {
     const worldPos = screenToWorld(screenPx, viewport);
     const now = Date.now();
     const timeSinceLastClick = now - this.lastClickTime;
     this.lastClickTime = now;
 
     if (this.context.state === 'idle') {
-      // Find snap candidate for first point
+      // Find snap candidate for first point (no angle wheel for first point)
       const snapResult = findSnapCandidate(
         screenPx,
         scene,
@@ -52,6 +52,7 @@ export class WallTool {
           snapToGrid: true,
           snapToNodes: true,
           snapToEdges: true,
+          snapToAngles: false,
         }
       );
 
@@ -72,24 +73,21 @@ export class WallTool {
       this.onStateChange(this.context);
     } else if (this.context.state === 'firstPoint') {
       // Second click - commit the wall
-      // Only treat as double-click if it's very fast (prevents interference with snap-to-node clicks)
-      const isRapidDoubleClick = timeSinceLastClick < 200; // Tighter threshold than hover double-click
+      const isRapidDoubleClick = timeSinceLastClick < 200;
       
       if (isRapidDoubleClick) {
-        // User double-clicked rapidly - commit at current position
-        this.commitWall(screenPx, scene, viewport);
+        this.commitWall(screenPx, scene, viewport, shiftKey);
       } else {
-        // Normal second click - commit the wall
-        this.commitWall(screenPx, scene, viewport);
+        this.commitWall(screenPx, scene, viewport, shiftKey);
       }
     }
   }
 
-  handlePointerMove(screenPx: Vec2, scene: Scene, viewport: Viewport, buttons: number): void {
+  handlePointerMove(screenPx: Vec2, scene: Scene, viewport: Viewport, buttons: number, shiftKey: boolean): void {
     const worldPos = screenToWorld(screenPx, viewport);
 
     if (this.context.state === 'idle') {
-      // Show hover point with snapping
+      // Show hover point with snapping (no angle wheel in idle)
       const snapResult = findSnapCandidate(
         screenPx,
         scene,
@@ -98,6 +96,7 @@ export class WallTool {
           snapToGrid: true,
           snapToNodes: true,
           snapToEdges: true,
+          snapToAngles: false,
         }
       );
 
@@ -114,7 +113,7 @@ export class WallTool {
         this.context.state = 'dragging';
       }
 
-      // Update preview with snapping
+      // Update preview with snapping (angle wheel if Shift held)
       const snapResult = findSnapCandidate(
         screenPx,
         scene,
@@ -123,6 +122,8 @@ export class WallTool {
           snapToGrid: true,
           snapToNodes: true,
           snapToEdges: true,
+          snapToAngles: shiftKey,
+          angleOrigin: this.context.firstPointMm || undefined,
         }
       );
 
@@ -134,7 +135,7 @@ export class WallTool {
 
       this.onStateChange(this.context);
     } else if (this.context.state === 'dragging') {
-      // Continue updating preview while dragging
+      // Continue updating preview while dragging (angle wheel if Shift held)
       const snapResult = findSnapCandidate(
         screenPx,
         scene,
@@ -143,6 +144,8 @@ export class WallTool {
           snapToGrid: true,
           snapToNodes: true,
           snapToEdges: true,
+          snapToAngles: shiftKey,
+          angleOrigin: this.context.firstPointMm || undefined,
         }
       );
 
@@ -156,20 +159,20 @@ export class WallTool {
     }
   }
 
-  handlePointerUp(screenPx: Vec2, scene: Scene, viewport: Viewport): void {
+  handlePointerUp(screenPx: Vec2, scene: Scene, viewport: Viewport, shiftKey: boolean): void {
     if (this.context.state === 'dragging') {
       // Drag-to-create: commit on mouse up
-      this.commitWall(screenPx, scene, viewport);
+      this.commitWall(screenPx, scene, viewport, shiftKey);
     }
     // If state is 'firstPoint', wait for second click (click-twice workflow)
   }
 
-  private commitWall(screenPx: Vec2, scene: Scene, viewport: Viewport): void {
+  private commitWall(screenPx: Vec2, scene: Scene, viewport: Viewport, shiftKey: boolean): void {
     if (!this.context.firstPointMm) return;
 
     const worldPos = screenToWorld(screenPx, viewport);
 
-    // Find final snap position
+    // Find final snap position (with angle wheel if Shift held)
     const snapResult = findSnapCandidate(
       screenPx,
       scene,
@@ -178,6 +181,8 @@ export class WallTool {
         snapToGrid: true,
         snapToNodes: true,
         snapToEdges: true,
+        snapToAngles: shiftKey,
+        angleOrigin: this.context.firstPointMm,
       }
     );
 

@@ -38,6 +38,9 @@ export function Stage() {
   const [wallToolContext, setWallToolContext] = useState<any>(null);
   const [selectToolContext, setSelectToolContext] = useState<any>(null);
 
+  // Track Shift key state
+  const [shiftKey, setShiftKey] = useState(false);
+
   useEffect(() => {
     const handleResize = () => {
       setDimensions({
@@ -133,6 +136,25 @@ export function Stage() {
     selectToolRef.current?.reset();
   }, [activeTool]);
 
+  // Track Shift key globally
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') setShiftKey(true);
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') setShiftKey(false);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -218,11 +240,11 @@ export function Stage() {
     };
     
     if (activeTool === 'wall') {
-      wallToolRef.current?.handlePointerDown(pointer, scene, viewport);
+      wallToolRef.current?.handlePointerDown(pointer, scene, viewport, shiftKey);
     } else if (activeTool === 'select') {
       selectToolRef.current?.handlePointerDown(pointer, scene, viewport, modifiers);
     }
-  }, [activeTool, scene, viewport]);
+  }, [activeTool, scene, viewport, shiftKey]);
 
   const handleMouseMove = useCallback((e: any) => {
     const stage = e.target.getStage();
@@ -230,21 +252,21 @@ export function Stage() {
     const buttons = e.evt.buttons;
 
     if (activeTool === 'wall') {
-      wallToolRef.current?.handlePointerMove(pointer, scene, viewport, buttons);
+      wallToolRef.current?.handlePointerMove(pointer, scene, viewport, buttons, shiftKey);
     } else if (activeTool === 'select') {
       selectToolRef.current?.handlePointerMove(pointer, scene, viewport);
     }
-  }, [activeTool, scene, viewport]);
+  }, [activeTool, scene, viewport, shiftKey]);
 
   const handleMouseUp = useCallback((e: any) => {
     const pointer = e.target.getStage().getPointerPosition();
 
     if (activeTool === 'wall') {
-      wallToolRef.current?.handlePointerUp(pointer, scene, viewport);
+      wallToolRef.current?.handlePointerUp(pointer, scene, viewport, shiftKey);
     } else if (activeTool === 'select') {
       selectToolRef.current?.handlePointerUp(pointer, scene, viewport);
     }
-  }, [activeTool, scene, viewport]);
+  }, [activeTool, scene, viewport, shiftKey]);
 
   // Determine what preview to show
   const showWallPreview = activeTool === 'wall' && wallToolContext?.state !== 'idle' && wallToolContext?.firstPointMm && wallToolContext?.currentPointMm;
