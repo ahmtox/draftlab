@@ -63,7 +63,12 @@ function useRoomShapes() {
       area: string;
     }> = [];
 
-    // ✅ NEW: Build half-edges from split scene (same as room detection)
+    // ✅ ADDED: Early return if no rooms (avoids splitting/half-edge work)
+    if (scene.rooms.size === 0) {
+      return shapes;
+    }
+
+    // Build half-edges from split scene
     const splitScene = splitWallsAtIntersections(scene);
     const halfEdges = buildHalfEdgeStructure({
       nodes: splitScene.nodes,
@@ -72,7 +77,7 @@ function useRoomShapes() {
     });
 
     for (const room of scene.rooms.values()) {
-      // ✅ Use split scene when building polygon
+      // Use split scene when building polygon
       const innerPolygonMm = buildInnerRoomPolygon(
         room.halfEdges, 
         halfEdges, 

@@ -101,7 +101,7 @@ export const useStore = create<UIState>((set, get) => ({
   setActiveTool: (tool) => set({ activeTool: tool }),
   setWallParams: (params) => set({ wallParams: params }),
   
-  setScene: (scene, skipRoomDetection = false) => { // ✅ NEW parameter
+  setScene: (scene, skipRoomDetection = false) => {
     const currentScene = get().scene;
     
     // ✅ Clear miter cache whenever scene changes
@@ -111,43 +111,16 @@ export const useStore = create<UIState>((set, get) => ({
     const wallsChanged = currentScene.walls !== scene.walls;
     const nodesChanged = currentScene.nodes !== scene.nodes;
     
-    // ✅ Only re-detect rooms if:
-    // 1. Wall/node topology changed AND
-    // 2. We're NOT in live drag mode AND
-    // 3. skipRoomDetection is false
+    // ✅ UPDATED: Always re-detect rooms when topology changes (unless explicitly skipped)
     if ((wallsChanged || nodesChanged) && !skipRoomDetection && !get().isLiveDragging) {
-      const currentRooms = currentScene.rooms;
-      
-      // Auto-detect rooms based on new topology
+      // Detect rooms from scratch
       const detectedRooms = detectRooms(scene);
       
-      // Build a map of boundary signatures to existing rooms for matching
-      const boundaryToRoom = new Map<string, typeof currentRooms extends Map<any, infer R> ? R : never>();
-      for (const room of currentRooms.values()) {
-        const signature = [...room.boundary].sort().join(',');
-        boundaryToRoom.set(signature, room);
-      }
+      // ✅ REMOVED: Label position preservation
+      // We now let the system compute fresh centroids each time
+      // This avoids stale half-edge references
       
-      // Preserve custom label positions from existing rooms
-      const roomsMap = new Map(
-        detectedRooms.map(detectedRoom => {
-          const signature = [...detectedRoom.boundary].sort().join(',');
-          const existingRoom = boundaryToRoom.get(signature);
-
-          // If found, preserve the ID, room number, and custom label position
-          if (existingRoom) {
-            return [existingRoom.id, {
-              ...detectedRoom,
-              id: existingRoom.id,
-              roomNumber: existingRoom.roomNumber,
-              labelPositionMm: existingRoom.labelPositionMm,
-            }];
-          }
-
-          // New room - use detected values
-          return [detectedRoom.id, detectedRoom];
-        })
-      );
+      const roomsMap = new Map(detectedRooms.map(r => [r.id, r]));
       
       set({ 
         scene: {
@@ -156,7 +129,7 @@ export const useStore = create<UIState>((set, get) => ({
         }
       });
     } else {
-      // Walls/nodes didn't change OR we're in live drag - just update scene directly
+      // No topology change OR we're in live drag OR skipRoomDetection = true
       set({ scene });
     }
   },

@@ -20,6 +20,14 @@ import { DeleteWallsCommand } from '../../core/commands/delete-walls';
 import { clearMiterCache } from '../../core/geometry/miter';
 import type { Vec2 } from '../../core/math/vec';
 
+const originalWarn = console.warn;
+console.warn = (...args: any[]) => {
+  if (args[0]?.includes?.('Recommended maximum number of layers')) {
+    return; // Skip this specific warning
+  }
+  originalWarn(...args);
+};
+
 export function Stage() {
   const viewport = useStore((state) => state.viewport);
   const setViewport = useStore((state) => state.setViewport);
@@ -102,12 +110,11 @@ export function Stage() {
             }
           }
 
-          // ✅ Skip room detection during live drag
           setScene({ 
             nodes: newNodes, 
             walls: currentScene.walls,
-            rooms: currentScene.rooms
-          }, true); // ✅ skipRoomDetection = true
+            rooms: new Map() // ✅ Clear rooms during drag
+          }, true); // skipRoomDetection = true
         },
         (nodePositions, mergeTargets) => {
           // ✅ End live drag
@@ -140,6 +147,11 @@ export function Stage() {
           }
 
           history.endGesture({ label: 'Move Selection' });
+          
+          // ✅ NEW: Force room re-detection after gesture completes
+          // This ensures rooms are detected even if nodes moved by tiny amounts
+          const finalScene = useStore.getState().scene;
+          useStore.getState().detectAndUpdateRooms();
         }
       );
     }
