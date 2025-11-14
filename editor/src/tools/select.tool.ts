@@ -9,7 +9,7 @@ import * as vec from '../core/math/vec';
 import { NODE_RADIUS_MM } from '../core/constants';
 
 const MIN_MARQUEE_SIZE_PX = 5;
-const MIN_DRAG_DISTANCE_PX = 3;
+const MIN_DRAG_DISTANCE_PX = 10; // ✅ Increased from 3 to 10 pixels
 
 type DragMode = 'wall' | 'node-a' | 'node-b' | 'marquee';
 
@@ -261,6 +261,7 @@ export class SelectTool {
       const dy = screenPx.y - startScreen.y;
       const distance = Math.sqrt(dx * dx + dy * dy);
 
+      // ✅ Only transition to marquee if drag distance exceeds threshold
       if (distance > MIN_DRAG_DISTANCE_PX) {
         this.context = {
           ...this.context,
@@ -311,7 +312,7 @@ export class SelectTool {
               snapToGrid: true,
               snapToNodes: true,
               snapToEdges: true,
-              snapToGuidelines: true, // ✅ Enable guideline snapping
+              snapToGuidelines: true,
               excludeNodeIds: excludedNodeIds,
             }
           );
@@ -354,7 +355,7 @@ export class SelectTool {
             snapToGrid: true,
             snapToNodes: true,
             snapToEdges: true,
-            snapToGuidelines: true, // ✅ Enable guideline snapping
+            snapToGuidelines: true,
             excludeNodeIds: excludedNodeIds,
           }
         );
@@ -481,7 +482,7 @@ export class SelectTool {
               snapToGrid: true,
               snapToNodes: true,
               snapToEdges: true,
-              snapToGuidelines: true, // ✅ Enable guideline snapping
+              snapToGuidelines: true,
               excludeNodeIds: excludedNodeIds,
             }
           );
@@ -516,7 +517,7 @@ export class SelectTool {
               snapToGrid: true,
               snapToNodes: true,
               snapToEdges: true,
-              snapToGuidelines: true, // ✅ Enable guideline snapping
+              snapToGuidelines: true,
               excludeNodeIds: excludedNodeIds,
             }
           );

@@ -30,7 +30,7 @@ type UIState = {
   lastSavedAt: number | null;
   isSaving: boolean;
   selectedWallIds: Set<string>;
-  selectedRoomId: string | null; // ✅ NEW: for debug visualization
+  selectedRoomId: string | null;
   hoveredWallId: string | null;
   dragState: DragState;
   snapCandidateA: any | null;
@@ -47,7 +47,7 @@ type UIState = {
   setIsSaving: (saving: boolean) => void;
   resetProject: () => void;
   setSelectedWallIds: (ids: Set<string>) => void;
-  setSelectedRoomId: (id: string | null) => void; // ✅ NEW
+  setSelectedRoomId: (id: string | null) => void;
   setHoveredWallId: (id: string | null) => void;
   setDragState: (state: Partial<DragState>) => void;
   setSnapCandidateA: (candidate: any | null) => void;
@@ -79,7 +79,7 @@ export const useStore = create<UIState>((set, get) => ({
   lastSavedAt: null,
   isSaving: false,
   selectedWallIds: new Set(),
-  selectedRoomId: null, // ✅ NEW
+  selectedRoomId: null,
   hoveredWallId: null,
   dragState: {
     mode: null,
@@ -98,23 +98,64 @@ export const useStore = create<UIState>((set, get) => ({
   setWallParams: (params) => set({ wallParams: params }),
   
   setScene: (scene) => {
-    // ✅ Auto-detect rooms whenever scene changes (stateless, no counter)
-    const detectedRooms = detectRooms(scene);
-    const roomsMap = new Map(detectedRooms.map(r => [r.id, r]));
+    const currentScene = get().scene;
     
-    set({ 
-      scene: {
-        ...scene,
-        rooms: roomsMap,
+    // ✅ Check if walls or nodes actually changed
+    const wallsChanged = currentScene.walls !== scene.walls;
+    const nodesChanged = currentScene.nodes !== scene.nodes;
+    
+    // ✅ Only re-detect rooms if wall/node topology changed
+    if (wallsChanged || nodesChanged) {
+      const currentRooms = currentScene.rooms;
+      
+      // Auto-detect rooms based on new topology
+      const detectedRooms = detectRooms(scene);
+      
+      // Build a map of boundary signatures to existing rooms for matching
+      const boundaryToRoom = new Map<string, typeof currentRooms extends Map<any, infer R> ? R : never>();
+      for (const room of currentRooms.values()) {
+        const signature = [...room.boundary].sort().join(',');
+        boundaryToRoom.set(signature, room);
       }
-    });
+      
+      // Preserve custom label positions from existing rooms
+      const roomsMap = new Map(
+        detectedRooms.map(detectedRoom => {
+          const signature = [...detectedRoom.boundary].sort().join(',');
+          const existingRoom = boundaryToRoom.get(signature);
+
+          // If found, preserve the ID, room number, and custom label position
+          if (existingRoom) {
+            return [existingRoom.id, {
+              ...detectedRoom,
+              id: existingRoom.id,
+              roomNumber: existingRoom.roomNumber,
+              labelPositionMm: existingRoom.labelPositionMm, // ✅ Preserve custom position
+            }];
+          }
+
+          // New room - use detected values
+          return [detectedRoom.id, detectedRoom];
+        })
+      );
+      
+      set({ 
+        scene: {
+          ...scene,
+          rooms: roomsMap,
+        }
+      });
+    } else {
+      // ✅ Walls/nodes didn't change - just update scene directly (preserves room changes)
+      set({ scene });
+    }
   },
-  
+
   setCurrentProject: (project) => set({ currentProject: project }),
   setLastSavedAt: (timestamp) => set({ lastSavedAt: timestamp }),
   setIsSaving: (saving) => set({ isSaving: saving }),
   setSelectedWallIds: (ids) => set({ selectedWallIds: ids }),
-  setSelectedRoomId: (id) => set({ selectedRoomId: id }), // ✅ NEW
+  setSelectedRoomId: (id) => set({ selectedRoomId: id }),
   setHoveredWallId: (id) => set({ hoveredWallId: id }),
   setDragState: (state) => set((prev) => ({ 
     dragState: { ...prev.dragState, ...state } 
@@ -130,7 +171,7 @@ export const useStore = create<UIState>((set, get) => ({
       rooms: new Map(),
     },
     selectedWallIds: new Set(),
-    selectedRoomId: null, // ✅ NEW
+    selectedRoomId: null,
     hoveredWallId: null,
     dragState: {
       mode: null,

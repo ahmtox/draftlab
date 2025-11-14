@@ -19,17 +19,18 @@ export type Wall = {
 
 export type Room = {
   id: string;
-  roomNumber: number;        // ✅ NEW: monotonic room number for display
-  boundary: string[];        // ordered wall IDs forming closed loop
-  halfEdges: string[];       // ordered half-edge IDs
-  areaMm2: number;          // cached area in square millimeters
-  perimeterMm: number;      // cached perimeter in millimeters
-  raiseFromFloorMm: number; // ✅ NEW: floor elevation (default 100mm = 10cm)
-  color?: string;           // fill color
+  roomNumber: number;
+  boundary: string[];
+  halfEdges: string[];
+  areaMm2: number;
+  perimeterMm: number;
+  raiseFromFloorMm: number;
+  labelPositionMm?: { x: number; y: number }; // ✅ NEW: Custom label position in world coords
+  color?: string;
 };
 
 export type Scene = {
   nodes: Map<string, Node>;
   walls: Map<string, Wall>;
-  rooms: Map<string, Room>;  // detected rooms
+  rooms: Map<string, Room>;
 };

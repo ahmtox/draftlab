@@ -1,7 +1,7 @@
 import { Stage as KonvaStage } from 'react-konva';
 import { useCallback, useRef, useEffect, useState } from 'react';
 import { GridLayer } from './layers/GridLayer';
-import { RoomsLayer } from './layers/RoomsLayer';
+import { RoomFillsLayer, RoomLabelsLayer } from './layers/RoomsLayer';
 import { WallsLayer } from './layers/WallsLayer';
 import { PreviewLayer } from './layers/PreviewLayer';
 import { GuidesLayer } from './layers/GuidesLayer';
@@ -28,7 +28,7 @@ export function Stage() {
   const history = useStore((state) => state.history);
   const selectedWallIds = useStore((state) => state.selectedWallIds);
   const setSelectedWallIds = useStore((state) => state.setSelectedWallIds);
-  const setSelectedRoomId = useStore((state) => state.setSelectedRoomId); // ✅ NEW
+  const setSelectedRoomId = useStore((state) => state.setSelectedRoomId);
   
   const rafIdRef = useRef<number | null>(null);
   const [dimensions, setDimensions] = useState({
@@ -83,7 +83,6 @@ export function Stage() {
     if (!selectToolRef.current) {
       selectToolRef.current = new SelectTool(
         (ctx) => {
-          // CRITICAL: Update both local state AND Zustand store immediately
           setSelectToolContext(ctx);
           setSelectedWallIds(ctx.selectedWallIds);
         },
@@ -102,14 +101,13 @@ export function Stage() {
           setScene({ 
             nodes: newNodes, 
             walls: currentScene.walls,
-            rooms: currentScene.rooms // Preserve rooms during drag
+            rooms: currentScene.rooms
           });
         },
         (nodePositions, mergeTargets) => {
           // Commit multi-wall drag
           history.beginGesture();
 
-          // Add MoveNodeCommands
           for (const [nodeId, { original, final }] of nodePositions) {
             const moved = original.x !== final.x || original.y !== final.y;
             if (moved) {
@@ -124,7 +122,6 @@ export function Stage() {
             }
           }
 
-          // Add MergeNodeCommands
           for (const [fromNodeId, toNodeId] of mergeTargets) {
             const cmd = new MergeNodesCommand(
               fromNodeId,
@@ -140,7 +137,6 @@ export function Stage() {
       );
     }
 
-    // Initialize measure tool
     if (!measureToolRef.current) {
       measureToolRef.current = new MeasureTool(
         (ctx) => setMeasureToolContext(ctx)
@@ -154,7 +150,6 @@ export function Stage() {
     measureToolRef.current?.reset();
   }, [activeTool]);
 
-  // Track Shift key globally
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Shift') setShiftKey(true);
@@ -173,20 +168,16 @@ export function Stage() {
     };
   }, []);
 
-  // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Undo: Ctrl/Cmd + Z
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
         e.preventDefault();
         useStore.getState().undo();
       }
-      // Redo: Ctrl/Cmd + Shift + Z or Ctrl/Cmd + Y
       else if ((e.ctrlKey || e.metaKey) && (e.shiftKey && e.key === 'z' || e.key === 'y')) {
         e.preventDefault();
         useStore.getState().redo();
       }
-      // Delete/Backspace: Delete selected walls
       else if ((e.key === 'Delete' || e.key === 'Backspace') && activeTool === 'select') {
         e.preventDefault();
         
@@ -200,17 +191,14 @@ export function Stage() {
           );
           
           history.push(cmd);
-          
-          // Clear selection after delete
           setSelectedWallIds(new Set());
         }
       }
-      // ✅ Escape: Clear selection (walls AND rooms) or cancel measurement
       else if (e.key === 'Escape') {
         e.preventDefault();
         if (activeTool === 'select') {
           setSelectedWallIds(new Set());
-          setSelectedRoomId(null); // ✅ Clear room selection too
+          setSelectedRoomId(null);
         } else if (activeTool === 'measure') {
           measureToolRef.current?.reset();
         }
@@ -297,11 +285,9 @@ export function Stage() {
     }
   }, [activeTool, scene, viewport, shiftKey]);
 
-  // Determine what preview to show
   const showWallPreview = activeTool === 'wall' && wallToolContext?.state !== 'idle' && wallToolContext?.firstPointMm && wallToolContext?.currentPointMm;
   const showWallHover = activeTool === 'wall' && wallToolContext?.state === 'idle' && wallToolContext?.hoverPointMm;
 
-  // Collect snap candidates from all active tools
   const allSnapCandidates: (any | null)[] = [];
 
   if (activeTool === 'wall') {
@@ -314,7 +300,6 @@ export function Stage() {
     allSnapCandidates.push(measureToolContext?.snapCandidate || null);
   }
 
-  // Determine cursor style based on tool
   const getCursorStyle = () => {
     if (activeTool === 'select') return 'default';
     if (activeTool === 'measure') return 'crosshair';
@@ -337,18 +322,21 @@ export function Stage() {
         cursor: getCursorStyle()
       }}
     >
-      {/* Z-ORDER: Bottom to Top per Architecture Spec */}
+      {/* ✅ Z-ORDER (Bottom to Top) - Room Labels ABOVE Walls */}
       
       {/* 1. Grid Layer (bottom) */}
       <GridLayer />
       
-      {/* 2. Rooms Layer (fills below walls, labels on top) */}
-      <RoomsLayer />
+      {/* 2. Room fills (below walls) */}
+      <RoomFillsLayer />
       
       {/* 3. Walls Layer */}
       <WallsLayer />
       
-      {/* 4. Preview layers (above walls) */}
+      {/* 4. Room labels (ABOVE walls - receives events first) */}
+      <RoomLabelsLayer />
+      
+      {/* 5. Preview layers */}
       {showWallPreview && (
         <PreviewLayer
           previewWall={{
@@ -366,10 +354,10 @@ export function Stage() {
         />
       )}
 
-      {/* 5. Guides layer (snap indicators) */}
+      {/* 6. Guides layer */}
       <GuidesLayer snapCandidates={allSnapCandidates} />
 
-      {/* 6. Marquee selection */}
+      {/* 7. Marquee selection */}
       {selectToolContext?.state === 'marquee' && (
         <MarqueeLayer
           marqueeStart={selectToolContext.marqueeStart}
@@ -377,10 +365,10 @@ export function Stage() {
         />
       )}
 
-      {/* 7. Measure layer */}
+      {/* 8. Measure layer */}
       <MeasureLayer measureContext={measureToolContext} />
 
-      {/* 8. Debug: Ray visualization (top) */}
+      {/* 9. Debug: Ray visualization (top) */}
       <RayVisualization />
     </KonvaStage>
   );
