@@ -25,6 +25,27 @@ export type SnapResult = {
 };
 
 /**
+ * Priority hierarchy (higher = stronger):
+ * 
+ * Without angle snapping:
+ * - 9: Node (highest - actual geometry)
+ * - 8: Guideline intersection
+ * - 7: Midpoint
+ * - 6: Edge
+ * - 5: Grid
+ * - 4: Single guideline (lowest - just visual alignment)
+ * 
+ * With angle snapping (add +10 to base priority):
+ * - 19: Node on angle line (highest)
+ * - 18: Guideline intersection on angle line
+ * - 17: Midpoint on angle line
+ * - 16: Edge intersection with angle line
+ * - 15: Grid on angle line
+ * - 14: Single guideline on angle line
+ * - 13: Angle-constrained cursor (fallback when no other snaps)
+ */
+
+/**
  * Find the best snap candidate near a screen-space cursor position
  */
 export function findSnapCandidate(
@@ -83,8 +104,8 @@ export function findSnapCandidate(
   // Collect all snap candidates within snap radius
   // (we'll filter by angle line later if angle snapping is active)
 
-  // Guideline snapping (priority 1 - lowest, just alignment aids)
-  // Guideline intersection snapping (priority 6 - higher than single guidelines)
+  // Guideline snapping (priority 4 - lowest, just alignment aids)
+  // Guideline intersection snapping (priority 8 - below nodes)
   if (snapToGuidelines) {
     const GUIDELINE_TOLERANCE_MM = 50; // Keep at 50mm always
     const INTERSECTION_TOLERANCE_MM = 50; // Distance to activate intersection snap
@@ -113,7 +134,7 @@ export function findSnapCandidate(
             point: intersection,
             type: 'guideline-intersection',
             entityId: `${hGuideline.nodeId}-${vGuideline.nodeId}`,
-            priority: 6, // Higher than single guideline (1) but lower than nodes (5)
+            priority: 8, // Below nodes (9) but above midpoint (7)
             distancePx,
             guidelines: [hGuideline, vGuideline],
           });
@@ -132,14 +153,14 @@ export function findSnapCandidate(
         point: guidelineSnap.snapPoint,
         type: 'guideline',
         entityId: guidelineSnap.guideline.nodeId,
-        priority: 1, // Lowest priority - just visual alignment
+        priority: 4, // Lowest priority - just visual alignment
         distancePx,
         guideline: guidelineSnap.guideline,
       });
     }
   }
 
-  // Grid snapping (priority 2 - slightly above guidelines)
+  // Grid snapping (priority 5)
   if (snapToGrid) {
     const gridCandidate = snapToGridPoint(cursorWorldMm, viewport);
     if (gridCandidate && gridCandidate.distancePx <= DEFAULT_TOL.snapPx) {
@@ -147,7 +168,7 @@ export function findSnapCandidate(
     }
   }
 
-  // Edge snapping (priority 3)
+  // Edge snapping (priority 6)
   if (snapToEdges) {
     for (const wall of scene.walls.values()) {
       const nodeA = scene.nodes.get(wall.nodeAId);
@@ -164,14 +185,14 @@ export function findSnapCandidate(
           point: projected.point,
           type: 'edge',
           entityId: wall.id,
-          priority: 3,
+          priority: 6,
           distancePx,
         });
       }
     }
   }
 
-  // Midpoint snapping (priority 4)
+  // Midpoint snapping (priority 7)
   if (snapToEdges) {
     for (const wall of scene.walls.values()) {
       const nodeA = scene.nodes.get(wall.nodeAId);
@@ -192,14 +213,14 @@ export function findSnapCandidate(
           point: midpoint,
           type: 'midpoint',
           entityId: wall.id,
-          priority: 4,
+          priority: 7,
           distancePx,
         });
       }
     }
   }
 
-  // Node snapping (priority 5 - highest for geometry)
+  // Node snapping (priority 9 - highest for geometry)
   if (snapToNodes) {
     for (const node of scene.nodes.values()) {
       if (excludeNodeIds.has(node.id)) continue;
@@ -212,7 +233,7 @@ export function findSnapCandidate(
           point: { x: node.x, y: node.y },
           type: 'node',
           entityId: node.id,
-          priority: 5,
+          priority: 9, // Highest priority - actual geometry merge points
           distancePx,
         });
       }
@@ -280,7 +301,7 @@ export function findSnapCandidate(
                   point: intersection,
                   type: 'guideline-intersection',
                   entityId: combinedGuidelines.map(g => g.nodeId).join('-'),
-                  priority: 16, // Very high priority (guideline intersection on angle line)
+                  priority: 18, // 8 + 10 (below node on angle line which is 19)
                   distancePx,
                   guidelines: combinedGuidelines,
                 },
@@ -310,7 +331,7 @@ export function findSnapCandidate(
             point: closest.intersection,
             type: 'guideline',
             entityId: closest.guidelines[0].nodeId,
-            priority: 11, // Boosted priority (guideline on angle line)
+            priority: 14, // 4 + 10 (boosted priority for guideline on angle line)
             distancePx,
             guideline: closest.guidelines[0],
           },
@@ -361,7 +382,7 @@ export function findSnapCandidate(
 
     // If we found candidates on the angle line, use them (they have higher priority)
     if (filteredCandidates.length > 0) {
-      // Boost priority of angle-aligned candidates
+      // Boost priority of angle-aligned candidates by +10
       filteredCandidates.forEach(c => c.priority += 10);
       
       // Sort and return best
@@ -398,7 +419,7 @@ export function findSnapCandidate(
         candidate: {
           point: angleSnappedPoint,
           type: 'angle',
-          priority: 9,
+          priority: 13, // Fallback when no geometry snaps exist
           distancePx,
         },
       };
@@ -571,7 +592,7 @@ function snapToGridPoint(worldMm: Vec2, viewport: Viewport): SnapCandidate | nul
   return {
     point: snappedPoint,
     type: 'grid',
-    priority: 2, // Just above guidelines
+    priority: 5,
     distancePx,
   };
 }

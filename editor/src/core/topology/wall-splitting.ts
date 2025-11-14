@@ -2,9 +2,10 @@ import type { Scene, Wall, Node } from '../domain/types';
 import type { Vec2 } from '../math/vec';
 import * as vec from '../math/vec';
 
-const INTERSECTION_TOLERANCE_MM = 1.0;
-const SNAP_TO_NODE_TOLERANCE_MM = 1.0;
-const DEDUPE_TOLERANCE_MM = 0.5; // For deduping intersection points
+const INTERSECTION_TOLERANCE_MM = 2.0; // Increased from 1.0 to be more forgiving
+const SNAP_TO_NODE_TOLERANCE_MM = 2.0; // Increased from 1.0
+const DEDUPE_TOLERANCE_MM = 1.0; // Increased from 0.5
+const PARAMETRIC_EPSILON = 1e-4; // For detecting intersections near segment endpoints
 
 /**
  * Result of wall splitting preprocessing
@@ -36,7 +37,7 @@ export function splitWallsAtIntersections(scene: Scene): SplitScene {
   
   // ✅ Only scan each unordered pair once (i, i+1...n) to avoid duplicates
   for (let i = 0; i < wallArray.length; i++) {
-    for (let j = i + 1; j < wallArray.length; j++) { // ✅ j = i+1, not j = 0
+    for (let j = i + 1; j < wallArray.length; j++) {
       const wall1 = wallArray[i];
       const wall2 = wallArray[j];
       
@@ -103,13 +104,13 @@ export function splitWallsAtIntersections(scene: Scene): SplitScene {
         point,
         t: vec.dot(vec.sub(point, nodeA), wallDir) / (wallLength * wallLength)
       }))
-      .filter(({ t }) => t > 1e-6 && t < 1 - 1e-6) // ✅ Absolute epsilon
+      .filter(({ t }) => t > PARAMETRIC_EPSILON && t < (1 - PARAMETRIC_EPSILON)) // More forgiving epsilon
       .sort((a, b) => a.t - b.t);
     
-    // ✅ Dedupe by t value
+    // ✅ Dedupe by t value with more tolerance
     const deduped: Array<{ point: Vec2; t: number }> = [];
     for (const s of sortedIntersections) {
-      if (deduped.length === 0 || Math.abs(s.t - deduped[deduped.length - 1].t) > 1e-6) {
+      if (deduped.length === 0 || Math.abs(s.t - deduped[deduped.length - 1].t) > PARAMETRIC_EPSILON) {
         deduped.push(s);
       }
     }
@@ -167,38 +168,53 @@ export function splitWallsAtIntersections(scene: Scene): SplitScene {
  * ✅ Push unique point (no duplicates within tolerance)
  */
 function pushUnique(list: Vec2[], p: Vec2): void {
-  for (const q of list) {
-    if (vec.distance(p, q) <= DEDUPE_TOLERANCE_MM) return; // Already there
+  for (const existing of list) {
+    if (vec.distance(existing, p) < DEDUPE_TOLERANCE_MM) {
+      return; // Already exists
+    }
   }
   list.push(p);
 }
 
 /**
  * Find intersection point between two wall centerlines
+ * ✅ IMPROVED: Better handling of near-parallel and near-endpoint cases
  */
 function intersectSegments(wall1: Wall, wall2: Wall, scene: Scene): Vec2 | null {
   const a1 = scene.nodes.get(wall1.nodeAId)!;
-  const a2 = scene.nodes.get(wall1.nodeBId)!;
-  const b1 = scene.nodes.get(wall2.nodeAId)!;
+  const b1 = scene.nodes.get(wall1.nodeBId)!;
+  const a2 = scene.nodes.get(wall2.nodeAId)!;
   const b2 = scene.nodes.get(wall2.nodeBId)!;
+
+  const dir1 = vec.sub(b1, a1);
+  const dir2 = vec.sub(b2, a2);
   
-  const d1 = vec.sub(a2, a1);
-  const d2 = vec.sub(b2, b1);
+  const denominator = cross(dir1, dir2);
   
-  const denominator = cross(d1, d2);
-  
-  if (Math.abs(denominator) < 1e-9) {
-    return null;
+  // ✅ More forgiving parallel threshold
+  if (Math.abs(denominator) < 1e-6) {
+    return null; // Parallel or coincident
   }
+
+  const diff = vec.sub(a2, a1);
+  const t1 = cross(diff, dir2) / denominator;
+  const t2 = cross(diff, dir1) / denominator;
+
+  // ✅ More forgiving bounds check with expanded epsilon
+  const epsilon = PARAMETRIC_EPSILON;
   
-  const delta = vec.sub(b1, a1);
-  const t1 = cross(delta, d2) / denominator;
-  const t2 = cross(delta, d1) / denominator;
-  
-  if (t1 >= 0 && t1 <= 1 && t2 >= 0 && t2 <= 1) {
-    return vec.add(a1, vec.scale(d1, t1));
+  if (t1 >= -epsilon && t1 <= 1 + epsilon && 
+      t2 >= -epsilon && t2 <= 1 + epsilon) {
+    
+    // Clamp to valid range
+    const clampedT1 = Math.max(0, Math.min(1, t1));
+    
+    return {
+      x: a1.x + clampedT1 * dir1.x,
+      y: a1.y + clampedT1 * dir1.y,
+    };
   }
-  
+
   return null;
 }
 
@@ -221,22 +237,24 @@ function wallsShareNode(wall1: Wall, wall2: Wall): boolean {
 
 /**
  * Check if point is near a wall endpoint
+ * ✅ IMPROVED: Uses increased tolerance
  */
 function isNearEndpoint(point: Vec2, wall: Wall, scene: Scene): boolean {
   const nodeA = scene.nodes.get(wall.nodeAId)!;
   const nodeB = scene.nodes.get(wall.nodeBId)!;
   
-  return vec.distance(point, nodeA) < INTERSECTION_TOLERANCE_MM ||
-         vec.distance(point, nodeB) < INTERSECTION_TOLERANCE_MM;
+  return vec.distance(point, nodeA) < SNAP_TO_NODE_TOLERANCE_MM ||
+         vec.distance(point, nodeB) < SNAP_TO_NODE_TOLERANCE_MM;
 }
 
 /**
  * Find existing node near a point
+ * ✅ IMPROVED: Uses increased tolerance
  */
 function findNearbyNode(point: Vec2, nodes: Map<string, Node>): string | null {
-  for (const [nodeId, node] of nodes) {
+  for (const [id, node] of nodes) {
     if (vec.distance(point, node) < SNAP_TO_NODE_TOLERANCE_MM) {
-      return nodeId;
+      return id;
     }
   }
   return null;
