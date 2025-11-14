@@ -18,7 +18,7 @@ import * as vec from '../math/vec';
 // Configuration
 // ============================================================================
 
-const DEBUG = false;
+const DEBUG = true;
 const EPSILON = 1e-9;
 const MAX_MITER_LENGTH_RATIO = 10; // Prevent infinite spikes at shallow angles
 const COLLINEAR_ANGLE_THRESHOLD = 0.0001; // ~0.006° - extremely tight for true collinearity
@@ -60,6 +60,15 @@ const log = {
   section: (title: string) => {
     if (DEBUG) console.log(`\n${'═'.repeat(80)}\n${title}\n${'═'.repeat(80)}`);
   },
+  warn: (...args: any[]) => {
+    if (DEBUG) console.warn(`  ⚠️ `, ...args);
+  },
+  success: (...args: any[]) => {
+    if (DEBUG) console.log(`  ✅ `, ...args);
+  },
+  fail: (...args: any[]) => {
+    if (DEBUG) console.log(`  ❌ `, ...args);
+  },
 };
 
 const formatPoint = (p: Vec2 | null): string => {
@@ -68,6 +77,14 @@ const formatPoint = (p: Vec2 | null): string => {
 
 const formatWallId = (id: string): string => {
   return id.slice(-5);
+};
+
+const formatSegment = (seg: Segment): string => {
+  return `[${formatPoint(seg.start)} → ${formatPoint(seg.end)}]`;
+};
+
+const formatLine = (line: Line): string => {
+  return `{point: ${formatPoint(line.point)}, dir: (${line.direction.x.toFixed(3)}, ${line.direction.y.toFixed(3)})}`;
 };
 
 // ============================================================================
@@ -180,8 +197,16 @@ function intersectSegments(seg1: Segment, seg2: Segment): Vec2 | null {
 
   const denominator = cross(d1, d2);
 
+  log.detail(`Testing segment intersection:`);
+  log.detail(`  seg1: ${formatSegment(seg1)}`);
+  log.detail(`  seg2: ${formatSegment(seg2)}`);
+  log.detail(`  d1: (${d1.x.toFixed(3)}, ${d1.y.toFixed(3)})`);
+  log.detail(`  d2: (${d2.x.toFixed(3)}, ${d2.y.toFixed(3)})`);
+  log.detail(`  denominator (cross product): ${denominator.toFixed(6)}`);
+
   // Parallel or coincident
   if (Math.abs(denominator) < EPSILON) {
+    log.detail(`  → Segments are parallel/coincident (|denom| < ${EPSILON})`);
     return null;
   }
 
@@ -189,11 +214,17 @@ function intersectSegments(seg1: Segment, seg2: Segment): Vec2 | null {
   const t1 = cross(delta, d2) / denominator;
   const t2 = cross(delta, d1) / denominator;
 
+  log.detail(`  t1 (parameter for seg1): ${t1.toFixed(6)}`);
+  log.detail(`  t2 (parameter for seg2): ${t2.toFixed(6)}`);
+
   // Check if intersection is within both segments [0, 1]
   if (t1 >= 0 && t1 <= 1 && t2 >= 0 && t2 <= 1) {
-    return vec.add(p1, vec.scale(d1, t1));
+    const intersection = vec.add(p1, vec.scale(d1, t1));
+    log.detail(`  → Intersection FOUND at ${formatPoint(intersection)}`);
+    return intersection;
   }
 
+  log.detail(`  → No intersection (parameters out of bounds [0,1])`);
   return null;
 }
 
@@ -204,15 +235,25 @@ function intersectSegments(seg1: Segment, seg2: Segment): Vec2 | null {
 function intersectLines(line1: Line, line2: Line): Vec2 | null {
   const denominator = cross(line1.direction, line2.direction);
 
+  log.detail(`Testing infinite line intersection:`);
+  log.detail(`  line1: ${formatLine(line1)}`);
+  log.detail(`  line2: ${formatLine(line2)}`);
+  log.detail(`  denominator (cross product): ${denominator.toFixed(6)}`);
+
   // Parallel
   if (Math.abs(denominator) < EPSILON) {
+    log.detail(`  → Lines are parallel (|denom| < ${EPSILON})`);
     return null;
   }
 
   const delta = vec.sub(line2.point, line1.point);
   const t = cross(delta, line2.direction) / denominator;
 
-  return vec.add(line1.point, vec.scale(line1.direction, t));
+  const intersection = vec.add(line1.point, vec.scale(line1.direction, t));
+  log.detail(`  t (parameter): ${t.toFixed(6)}`);
+  log.detail(`  → Intersection at ${formatPoint(intersection)}`);
+
+  return intersection;
 }
 
 /**
@@ -228,13 +269,19 @@ function clampMiterLength(
   const maxLength = avgThickness * MAX_MITER_LENGTH_RATIO;
   const distance = vec.distance(node, point);
 
+  log.detail(`Clamping miter point:`);
+  log.detail(`  point: ${formatPoint(point)}`);
+  log.detail(`  node: ${formatPoint(node)}`);
+  log.detail(`  wall thickness: ${avgThickness.toFixed(1)}mm`);
+  log.detail(`  distance from node: ${distance.toFixed(1)}mm`);
+  log.detail(`  max allowed: ${maxLength.toFixed(1)}mm (${MAX_MITER_LENGTH_RATIO}x thickness)`);
+
   if (distance > maxLength) {
-    if (DEBUG) {
-      log.detail(`Clamped: distance ${distance.toFixed(1)}mm > max ${maxLength.toFixed(1)}mm`);
-    }
+    log.fail(`Point REJECTED: distance ${distance.toFixed(1)}mm > max ${maxLength.toFixed(1)}mm`);
     return null;
   }
 
+  log.success(`Point ACCEPTED: distance ${distance.toFixed(1)}mm <= max ${maxLength.toFixed(1)}mm`);
   return point;
 }
 
@@ -267,6 +314,15 @@ function getWallEdgesAtNode(wall: Wall, node: Node, scene: Scene): WallEdges {
   const perp = perpCCW(dir);
   const halfThickness = wall.thicknessMm / 2;
 
+  log.detail(`Computing wall edges for ${formatWallId(wall.id)}:`);
+  log.detail(`  thickness: ${wall.thicknessMm.toFixed(1)}mm (half: ${halfThickness.toFixed(1)}mm)`);
+  log.detail(`  computing at node: ${formatWallId(node.id)}`);
+  log.detail(`  isNodeA: ${isNodeA}`);
+  log.detail(`  startNode: ${formatPoint(startNode)}`);
+  log.detail(`  endNode: ${formatPoint(endNode)}`);
+  log.detail(`  direction: (${dir.x.toFixed(3)}, ${dir.y.toFixed(3)})`);
+  log.detail(`  perpendicular (left): (${perp.x.toFixed(3)}, ${perp.y.toFixed(3)})`);
+
   // Compute offset points at the node (start of the edge segments)
   const leftAtNode = vec.add(startNode, vec.scale(perp, halfThickness));
   const rightAtNode = vec.sub(startNode, vec.scale(perp, halfThickness));
@@ -274,6 +330,9 @@ function getWallEdgesAtNode(wall: Wall, node: Node, scene: Scene): WallEdges {
   // Compute offset points at the opposite end (for segment bounds)
   const leftAtEnd = vec.add(endNode, vec.scale(perp, halfThickness));
   const rightAtEnd = vec.sub(endNode, vec.scale(perp, halfThickness));
+
+  log.detail(`  leftEdge: ${formatSegment({ start: leftAtNode, end: leftAtEnd })}`);
+  log.detail(`  rightEdge: ${formatSegment({ start: rightAtNode, end: rightAtEnd })}`);
 
   return {
     wall,
@@ -301,15 +360,17 @@ interface EdgeIntersection {
  * FIXED: Proper collinear wall handling for 2-wall straight-through connections
  * FIXED: Non-collinear wall gets apex from collinear walls' non-intersecting edges
  * ✅ NEW: Cached results per node
+ * ✅ NEW: Discount "wrong-side" intersections when walls have different thicknesses
  */
 function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, WallCorners> {
   // ✅ Check cache first
   const cached = nodeCornerCache.get(node.id);
   if (cached) {
+    log.detail(`Using cached corners for node ${formatWallId(node.id)}`);
     return cached;
   }
 
-  log.section(`Computing Corners for Node ${formatWallId(node.id)}`);
+  log.section(`Computing Corners for Node ${formatWallId(node.id)} at ${formatPoint(node)}`);
 
   const result = new Map<string, WallCorners>();
 
@@ -321,6 +382,12 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
   const incidentWalls = [...scene.walls.values()].filter(
     wall => wall.nodeAId === node.id || wall.nodeBId === node.id
   );
+
+  log.substep(`Found ${incidentWalls.length} incident wall(s)`);
+  
+  for (const wall of incidentWalls) {
+    log.detail(`  - ${formatWallId(wall.id)}: thickness=${wall.thicknessMm.toFixed(1)}mm`);
+  }
 
   if (incidentWalls.length === 0) {
     nodeCornerCache.set(node.id, result); // ✅ Cache empty result
@@ -347,7 +414,7 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
   for (const { wall1, wall2 } of collinearPairs) {
     collinearWallIds.add(wall1.id);
     collinearWallIds.add(wall2.id);
-    log.substep(`Collinear pair: ${formatWallId(wall1.id)} ↔ ${formatWallId(wall2.id)}`);
+    log.substep(`Collinear pair: ${formatWallId(wall1.id)} (${wall1.thicknessMm}mm) ↔ ${formatWallId(wall2.id)} (${wall2.thicknessMm}mm)`);
   }
 
   // ============================================================
@@ -364,7 +431,7 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
         right: rightEdge.start,
         apex: null,
       });
-      log.substep(`${formatWallId(wall.id)}: left=${formatPoint(leftEdge.start)}, right=${formatPoint(rightEdge.start)}`);
+      log.substep(`${formatWallId(wall.id)} (${wall.thicknessMm}mm): left=${formatPoint(leftEdge.start)}, right=${formatPoint(rightEdge.start)}`);
     }
 
     log.result('Straight-through butt joints assigned');
@@ -385,20 +452,33 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
   }
 
   // Test all pairs of walls
+  let testCount = 0;
+  let intersectionCount = 0;
+
   for (let i = 0; i < wallEdges.length; i++) {
     const wallA = wallEdges[i];
 
     for (let j = i + 1; j < wallEdges.length; j++) {
       const wallB = wallEdges[j];
 
+      log.substep(`Testing walls ${formatWallId(wallA.wall.id)} (${wallA.wall.thicknessMm}mm) vs ${formatWallId(wallB.wall.id)} (${wallB.wall.thicknessMm}mm)`);
+
       // Skip if both walls are collinear (their edges won't meaningfully intersect)
       const bothCollinear = collinearWallIds.has(wallA.wall.id) && collinearWallIds.has(wallB.wall.id);
       if (bothCollinear && areWallsCollinear(wallA.wall, wallB.wall, node, scene)) {
-        log.detail(`Skipping collinear pair: ${formatWallId(wallA.wall.id)} ↔ ${formatWallId(wallB.wall.id)}`);
+        log.detail(`Skipping collinear pair`);
         continue;
       }
 
-      // Test all four edge combinations
+      // Test all four edge combinations and track results
+      const intersectionResults: Array<{
+        edgeA: 'left' | 'right';
+        edgeB: 'left' | 'right';
+        point: Vec2;
+        distA: number;
+        distB: number;
+      }> = [];
+
       const tests = [
         { edgeA: wallA.leftEdge, sideA: 'left' as const, edgeB: wallB.leftEdge, sideB: 'left' as const },
         { edgeA: wallA.leftEdge, sideA: 'left' as const, edgeB: wallB.rightEdge, sideB: 'right' as const },
@@ -407,37 +487,127 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
       ];
 
       for (const { edgeA, sideA, edgeB, sideB } of tests) {
+        testCount++;
+        log.detail(`\nTest ${testCount}: ${formatWallId(wallA.wall.id)}.${sideA} ∩ ${formatWallId(wallB.wall.id)}.${sideB}`);
+        
         const intersection = intersectSegments(edgeA, edgeB);
 
         if (intersection) {
           const distA = vec.distance(node, intersection);
           const distB = vec.distance(node, intersection);
 
-          log.substep(
-            `${formatWallId(wallA.wall.id)}.${sideA} ∩ ${formatWallId(wallB.wall.id)}.${sideB} = ${formatPoint(intersection)} (dist: ${distA.toFixed(1)}mm)`
-          );
-
-          // Add to wall A's intersection list
-          allIntersections.get(wallA.wall.id)![sideA].push({
-            wallId: wallA.wall.id,
-            edge: sideA,
+          intersectionResults.push({
+            edgeA: sideA,
+            edgeB: sideB,
             point: intersection,
-            distanceFromNode: distA,
+            distA,
+            distB,
           });
 
-          // Add to wall B's intersection list
-          allIntersections.get(wallB.wall.id)![sideB].push({
-            wallId: wallB.wall.id,
-            edge: sideB,
-            point: intersection,
-            distanceFromNode: distB,
-          });
+          log.detail(`  → Found intersection at ${formatPoint(intersection)} (distA: ${distA.toFixed(1)}mm, distB: ${distB.toFixed(1)}mm)`);
         }
+      }
+
+      // ✅ NEW: Filter out "wrong-side" intersections
+      // Case 1: One edge of wall A intersects BOTH edges of wall B
+      // Case 2: Both opposite edges intersect (A.left∩B.right AND A.right∩B.left)
+      if (intersectionResults.length > 1) {
+        log.detail(`\n  Filtering ${intersectionResults.length} intersections for wrong-side cases...`);
+
+        // Group by which wall's edge is being tested
+        const byWallAEdge = new Map<'left' | 'right', typeof intersectionResults>();
+        const byWallBEdge = new Map<'left' | 'right', typeof intersectionResults>();
+
+        for (const result of intersectionResults) {
+          if (!byWallAEdge.has(result.edgeA)) byWallAEdge.set(result.edgeA, []);
+          if (!byWallBEdge.has(result.edgeB)) byWallBEdge.set(result.edgeB, []);
+          byWallAEdge.get(result.edgeA)!.push(result);
+          byWallBEdge.get(result.edgeB)!.push(result);
+        }
+
+        const filtered: typeof intersectionResults = [];
+
+        // Case 1: One edge of wall A hits both edges of wall B
+        for (const [edgeA, results] of byWallAEdge.entries()) {
+          if (results.length === 2) {
+            // Wall A's edge hits both edges of wall B
+            // Keep the intersection where Wall B's edge would naturally intersect Wall A
+            // This means: if edgeA is 'left', prefer edgeB='right' (opposite sides meet)
+            const preferredEdgeB = edgeA === 'left' ? 'right' : 'left';
+            
+            const preferred = results.find(r => r.edgeB === preferredEdgeB);
+            const other = results.find(r => r.edgeB !== preferredEdgeB);
+            
+            if (preferred && other) {
+              log.warn(`  Wall A edge ${edgeA} hits both edges of Wall B - keeping opposite-side intersection`);
+              log.detail(`    KEEP: ${formatWallId(wallA.wall.id)}.${preferred.edgeA} ∩ ${formatWallId(wallB.wall.id)}.${preferred.edgeB} @ ${preferred.distA.toFixed(1)}mm`);
+              log.warn(`    DISCARD: ${formatWallId(wallA.wall.id)}.${other.edgeA} ∩ ${formatWallId(wallB.wall.id)}.${other.edgeB} @ ${other.distA.toFixed(1)}mm`);
+              
+              filtered.push(preferred);
+              continue;
+            }
+          }
+          filtered.push(...results);
+        }
+
+        // Case 2: One edge of wall B hits both edges of wall A
+        const alreadyFiltered = new Set(filtered);
+        for (const [edgeB, results] of byWallBEdge.entries()) {
+          if (results.length === 2) {
+            const [int1, int2] = results;
+            
+            // Skip if already filtered by Case 1
+            if (alreadyFiltered.has(int1) || alreadyFiltered.has(int2)) continue;
+            
+            // Wall B's edge hits both edges of wall A
+            // Keep the intersection where Wall A's edge would naturally intersect Wall B
+            const preferredEdgeA = edgeB === 'left' ? 'right' : 'left';
+            
+            const preferred = results.find(r => r.edgeA === preferredEdgeA);
+            const other = results.find(r => r.edgeA !== preferredEdgeA);
+            
+            if (preferred && other) {
+              log.warn(`  Wall B edge ${edgeB} hits both edges of Wall A - keeping opposite-side intersection`);
+              log.detail(`    KEEP: ${formatWallId(wallA.wall.id)}.${preferred.edgeA} ∩ ${formatWallId(wallB.wall.id)}.${preferred.edgeB} @ ${preferred.distB.toFixed(1)}mm`);
+              log.warn(`    DISCARD: ${formatWallId(wallA.wall.id)}.${other.edgeA} ∩ ${formatWallId(wallB.wall.id)}.${other.edgeB} @ ${other.distB.toFixed(1)}mm`);
+              
+              filtered.push(preferred);
+            }
+          }
+        }
+
+        // Remove duplicates and replace intersectionResults
+        intersectionResults.length = 0;
+        intersectionResults.push(...filtered);
+      }
+      // Add filtered intersections to the result lists
+      for (const result of intersectionResults) {
+        intersectionCount++;
+
+        log.success(
+          `INTERSECTION #${intersectionCount}: ${formatPoint(result.point)} (distA: ${result.distA.toFixed(1)}mm, distB: ${result.distB.toFixed(1)}mm)`
+        );
+
+        // Add to wall A's intersection list
+        allIntersections.get(wallA.wall.id)![result.edgeA].push({
+          wallId: wallA.wall.id,
+          edge: result.edgeA,
+          point: result.point,
+          distanceFromNode: result.distA,
+        });
+
+        // Add to wall B's intersection list
+        allIntersections.get(wallB.wall.id)![result.edgeB].push({
+          wallId: wallB.wall.id,
+          edge: result.edgeB,
+          point: result.point,
+          distanceFromNode: result.distB,
+        });
       }
     }
   }
 
-  log.result('All intersections collected');
+  log.result(`Tested ${testCount} edge pairs, found ${intersectionCount} valid intersections`);
 
   // ============================================================
   // STEP 3: Choose the FARTHEST valid intersection for each edge
@@ -448,22 +618,38 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
     const corners = result.get(wallId)!;
     const wall = scene.walls.get(wallId)!;
 
+    log.substep(`Processing ${formatWallId(wallId)} (thickness: ${wall.thicknessMm}mm)`);
+    log.detail(`  Left intersections: ${intersections.left.length}`);
+    log.detail(`  Right intersections: ${intersections.right.length}`);
+
     // Process left edge intersections
     if (intersections.left.length > 0) {
       // Sort by distance from node (descending - farthest first)
       intersections.left.sort((a, b) => b.distanceFromNode - a.distanceFromNode);
+
+      log.detail(`  Evaluating left edge candidates (farthest first):`);
+      for (let idx = 0; idx < intersections.left.length; idx++) {
+        const candidate = intersections.left[idx];
+        log.detail(`    [${idx}] ${formatPoint(candidate.point)} @ ${candidate.distanceFromNode.toFixed(1)}mm`);
+      }
 
       // Choose the farthest valid intersection
       for (const candidate of intersections.left) {
         const clamped = clampMiterLength(node, candidate.point, wall.thicknessMm);
         if (clamped) {
           corners.left = clamped;
-          log.substep(
+          log.success(
             `${formatWallId(wallId)}.left: chose farthest @ ${candidate.distanceFromNode.toFixed(1)}mm = ${formatPoint(clamped)}`
           );
           break;
         }
       }
+
+      if (!corners.left) {
+        log.warn(`${formatWallId(wallId)}.left: NO valid intersection after clamping`);
+      }
+    } else {
+      log.warn(`${formatWallId(wallId)}.left: NO intersections found`);
     }
 
     // Process right edge intersections
@@ -471,17 +657,29 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
       // Sort by distance from node (descending - farthest first)
       intersections.right.sort((a, b) => b.distanceFromNode - a.distanceFromNode);
 
+      log.detail(`  Evaluating right edge candidates (farthest first):`);
+      for (let idx = 0; idx < intersections.right.length; idx++) {
+        const candidate = intersections.right[idx];
+        log.detail(`    [${idx}] ${formatPoint(candidate.point)} @ ${candidate.distanceFromNode.toFixed(1)}mm`);
+      }
+
       // Choose the farthest valid intersection
       for (const candidate of intersections.right) {
         const clamped = clampMiterLength(node, candidate.point, wall.thicknessMm);
         if (clamped) {
           corners.right = clamped;
-          log.substep(
+          log.success(
             `${formatWallId(wallId)}.right: chose farthest @ ${candidate.distanceFromNode.toFixed(1)}mm = ${formatPoint(clamped)}`
           );
           break;
         }
       }
+
+      if (!corners.right) {
+        log.warn(`${formatWallId(wallId)}.right: NO valid intersection after clamping`);
+      }
+    } else {
+      log.warn(`${formatWallId(wallId)}.right: NO intersections found`);
     }
   }
 
@@ -504,7 +702,7 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
         edge: 'left',
         line: { point: leftEdge.start, direction: dir },
       });
-      log.substep(`${formatWallId(wall.id)}.left has no intersection`);
+      log.substep(`${formatWallId(wall.id)}.left has no intersection (will extend to infinite line)`);
     }
 
     if (!corners.right) {
@@ -514,11 +712,11 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
         edge: 'right',
         line: { point: rightEdge.start, direction: dir },
       });
-      log.substep(`${formatWallId(wall.id)}.right has no intersection`);
+      log.substep(`${formatWallId(wall.id)}.right has no intersection (will extend to infinite line)`);
     }
   }
 
-  log.result('Non-intersecting edges identified');
+  log.result(`Found ${nonIntersectingEdges.length} non-intersecting edges`);
 
   // ============================================================
   // STEP 4: Collinear handling is SKIPPED (handled in Step SPECIAL above)
@@ -532,6 +730,8 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
   // ============================================================
   log.step(5, 'Extending remaining non-intersecting edges to infinite lines');
 
+  let infiniteIntersectionCount = 0;
+
   // Try to intersect non-intersecting edges as infinite lines
   for (let i = 0; i < nonIntersectingEdges.length; i++) {
     for (let j = i + 1; j < nonIntersectingEdges.length; j++) {
@@ -541,12 +741,13 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
       // Don't intersect two edges from the same wall
       if (edgeA.wallId === edgeB.wallId) continue;
 
+      log.detail(`\nTrying infinite line intersection: ${formatWallId(edgeA.wallId)}.${edgeA.edge} ∩ ${formatWallId(edgeB.wallId)}.${edgeB.edge}`);
+
       const intersection = intersectLines(edgeA.line, edgeB.line);
 
       if (intersection) {
-        log.substep(
-          `Extended: ${formatWallId(edgeA.wallId)}.${edgeA.edge} ∩ ${formatWallId(edgeB.wallId)}.${edgeB.edge} = ${formatPoint(intersection)}`
-        );
+        infiniteIntersectionCount++;
+        log.success(`Infinite intersection #${infiniteIntersectionCount}: ${formatPoint(intersection)}`);
 
         // Assign to both walls
         const cornersA = result.get(edgeA.wallId)!;
@@ -556,20 +757,24 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
 
         if (edgeA.edge === 'left' && !cornersA.left) {
           cornersA.left = clampMiterLength(node, intersection, wallA.thicknessMm);
+          log.detail(`  Assigned to ${formatWallId(edgeA.wallId)}.left: ${formatPoint(cornersA.left)}`);
         } else if (edgeA.edge === 'right' && !cornersA.right) {
           cornersA.right = clampMiterLength(node, intersection, wallA.thicknessMm);
+          log.detail(`  Assigned to ${formatWallId(edgeA.wallId)}.right: ${formatPoint(cornersA.right)}`);
         }
 
         if (edgeB.edge === 'left' && !cornersB.left) {
           cornersB.left = clampMiterLength(node, intersection, wallB.thicknessMm);
+          log.detail(`  Assigned to ${formatWallId(edgeB.wallId)}.left: ${formatPoint(cornersB.left)}`);
         } else if (edgeB.edge === 'right' && !cornersB.right) {
           cornersB.right = clampMiterLength(node, intersection, wallB.thicknessMm);
+          log.detail(`  Assigned to ${formatWallId(edgeB.wallId)}.right: ${formatPoint(cornersB.right)}`);
         }
       }
     }
   }
 
-  log.result('Non-intersecting edges processed');
+  log.result(`Found ${infiniteIntersectionCount} infinite line intersections`);
 
   // ============================================================
   // STEP 6: Create apex points for fully-intersected walls
@@ -608,7 +813,7 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
         const corners = result.get(wall.id)!;
         if (!corners.apex) {
           corners.apex = { x: node.x, y: node.y };
-          log.substep(`  ✅ ${formatWallId(wall.id)}: apex = node center (cross junction) = ${formatPoint(corners.apex)}`);
+          log.success(`${formatWallId(wall.id)}: apex = node center (cross junction) = ${formatPoint(corners.apex)}`);
         }
       }
     }
@@ -620,18 +825,21 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
 
     // If both left and right are intersected, we need an apex
     if (corners.left && corners.right) {
+      log.substep(`${formatWallId(wallId)}: has both corners, checking if apex needed`);
+      
       // Check if BOTH edges came from finite segment intersections (not infinite extensions)
       const leftFromSegment = !edgesFromInfiniteExtension.has(`${wallId}.left`);
       const rightFromSegment = !edgesFromInfiniteExtension.has(`${wallId}.right`);
 
+      log.detail(`  left from segment: ${leftFromSegment}`);
+      log.detail(`  right from segment: ${rightFromSegment}`);
+
       if (!leftFromSegment || !rightFromSegment) {
-        log.substep(
-          `${formatWallId(wallId)}: has both corners but at least one is from infinite extension, no apex`
-        );
+        log.warn(`${formatWallId(wallId)}: at least one edge from infinite extension, skipping apex`);
         continue;
       }
 
-      log.substep(`${formatWallId(wallId)}: both edges intersected via segments, checking for apex`);
+      log.detail(`Both edges from finite segments, computing apex...`);
 
       // ✅ FIX: Look for apex from collinear walls' non-intersecting edges FIRST
       if (collinearWallIds.size > 0 && !collinearWallIds.has(wallId)) {
@@ -640,71 +848,38 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
         // Get non-intersecting edges from collinear walls only
         const collinearNonIntersecting = nonIntersectingEdges.filter(e => collinearWallIds.has(e.wallId));
         
-        log.detail(`Found ${collinearNonIntersecting.length} non-intersecting edges from collinear walls:`);
-        for (const edge of collinearNonIntersecting) {
-          log.detail(`  - ${formatWallId(edge.wallId)}.${edge.edge}: origin=${formatPoint(edge.line.point)}, dir=(${edge.line.direction.x.toFixed(3)}, ${edge.line.direction.y.toFixed(3)})`);
-        }
+        log.detail(`Found ${collinearNonIntersecting.length} non-intersecting edges from collinear walls`);
         
         if (collinearNonIntersecting.length === 2) {
-          log.detail(`Attempting to intersect the 2 collinear non-intersecting edges...`);
-          
-          // ✅ CHECK: If both edges start at the same point, that's the apex!
           const edge1 = collinearNonIntersecting[0];
           const edge2 = collinearNonIntersecting[1];
           
+          log.detail(`Attempting to intersect collinear edges...`);
+          
           if (almostEqual(edge1.line.point, edge2.line.point)) {
-            log.detail(`✅ Both edges share the same origin - using as apex!`);
+            log.success(`Both edges share the same origin!`);
             const apex = edge1.line.point;
             
             if (!almostEqual(apex, corners.left) && !almostEqual(apex, corners.right)) {
               const wall = scene.walls.get(wallId)!;
               const clampedApex = clampMiterLength(node, apex, wall.thicknessMm);
               
-              log.detail(`Shared origin apex: ${formatPoint(apex)}`);
-              log.detail(`After clamp: ${formatPoint(clampedApex)}`);
-              log.detail(`Distance from node: ${vec.distance(node, apex).toFixed(1)}mm`);
-              log.detail(`Max allowed: ${(wall.thicknessMm * MAX_MITER_LENGTH_RATIO).toFixed(1)}mm`);
-              
               corners.apex = clampedApex;
-              log.substep(`${formatWallId(wallId)}: ✅ apex from collinear walls' shared origin = ${formatPoint(corners.apex)}`);
-              continue; // Found apex, move to next wall
-            } else {
-              log.detail(`❌ Apex rejected: too close to existing corners`);
+              log.success(`${formatWallId(wallId)}: apex from shared origin = ${formatPoint(corners.apex)}`);
+              continue;
             }
           } else {
-            // Try normal line intersection
             const apex = intersectLines(edge1.line, edge2.line);
             
-            log.detail(`Intersection result: ${formatPoint(apex)}`);
-            
-            if (apex) {
-              log.detail(`Checking if apex is different from corners:`);
-              log.detail(`  - corners.left = ${formatPoint(corners.left)}`);
-              log.detail(`  - corners.right = ${formatPoint(corners.right)}`);
-              log.detail(`  - almostEqual(apex, left) = ${almostEqual(apex, corners.left)}`);
-              log.detail(`  - almostEqual(apex, right) = ${almostEqual(apex, corners.right)}`);
+            if (apex && !almostEqual(apex, corners.left) && !almostEqual(apex, corners.right)) {
+              const wall = scene.walls.get(wallId)!;
+              const clampedApex = clampMiterLength(node, apex, wall.thicknessMm);
               
-              if (!almostEqual(apex, corners.left) && !almostEqual(apex, corners.right)) {
-                const wall = scene.walls.get(wallId)!;
-                const clampedApex = clampMiterLength(node, apex, wall.thicknessMm);
-                
-                log.detail(`Before clamp: ${formatPoint(apex)}`);
-                log.detail(`After clamp: ${formatPoint(clampedApex)}`);
-                log.detail(`Distance from node: ${vec.distance(node, apex).toFixed(1)}mm`);
-                log.detail(`Max allowed: ${(wall.thicknessMm * MAX_MITER_LENGTH_RATIO).toFixed(1)}mm`);
-                
-                corners.apex = clampedApex;
-                log.substep(`${formatWallId(wallId)}: ✅ apex from collinear walls' edges = ${formatPoint(corners.apex)}`);
-                continue; // Found apex, move to next wall
-              } else {
-                log.detail(`❌ Apex rejected: too close to existing corners`);
-              }
-            } else {
-              log.detail(`❌ No intersection found (lines are parallel)`);
+              corners.apex = clampedApex;
+              log.success(`${formatWallId(wallId)}: apex from collinear edges = ${formatPoint(corners.apex)}`);
+              continue;
             }
           }
-        } else {
-          log.detail(`❌ Need exactly 2 edges, found ${collinearNonIntersecting.length}`);
         }
       }
       
@@ -712,6 +887,8 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
       const otherNonIntersecting = nonIntersectingEdges.filter(e => e.wallId !== wallId);
 
       if (otherNonIntersecting.length >= 2) {
+        log.detail(`Trying apex from ${otherNonIntersecting.length} other non-intersecting edges`);
+        
         for (let i = 0; i < otherNonIntersecting.length; i++) {
           for (let j = i + 1; j < otherNonIntersecting.length; j++) {
             const edgeA = otherNonIntersecting[i];
@@ -722,7 +899,7 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
             if (apex && !almostEqual(apex, corners.left) && !almostEqual(apex, corners.right)) {
               const wall = scene.walls.get(wallId)!;
               corners.apex = clampMiterLength(node, apex, wall.thicknessMm);
-              log.substep(`${formatWallId(wallId)}: apex from other edges = ${formatPoint(corners.apex)}`);
+              log.success(`${formatWallId(wallId)}: apex from other edges = ${formatPoint(corners.apex)}`);
               break;
             }
           }
@@ -732,6 +909,8 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
 
       // If no apex found and this is a multi-wall junction (3+ walls), use node center
       if (!corners.apex && incidentWalls.length >= 3) {
+        log.detail(`Checking if all walls fully intersected via segments for node center apex`);
+        
         let allFullyIntersectedViaSegments = true;
         for (const { wall } of wallEdges) {
           const c = result.get(wall.id)!;
@@ -746,13 +925,30 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
 
         if (allFullyIntersectedViaSegments) {
           corners.apex = { x: node.x, y: node.y };
-          log.substep(`${formatWallId(wallId)}: apex = node position (all edges intersected via segments) = ${formatPoint(corners.apex)}`);
+          log.success(`${formatWallId(wallId)}: apex = node center (all edges from segments) = ${formatPoint(corners.apex)}`);
+        } else {
+          log.warn(`${formatWallId(wallId)}: not all edges from segments, no node center apex`);
         }
       }
+    } else {
+      log.warn(`${formatWallId(wallId)}: missing corners (left: ${!!corners.left}, right: ${!!corners.right})`);
     }
   }
 
   log.result('Apex points computed');
+
+  // ============================================================
+  // FINAL: Log summary
+  // ============================================================
+  log.section(`Summary for Node ${formatWallId(node.id)}`);
+  
+  for (const [wallId, corners] of result) {
+    const wall = scene.walls.get(wallId)!;
+    log.substep(`${formatWallId(wallId)} (${wall.thicknessMm}mm):`);
+    log.detail(`  left: ${formatPoint(corners.left)}`);
+    log.detail(`  right: ${formatPoint(corners.right)}`);
+    log.detail(`  apex: ${formatPoint(corners.apex)}`);
+  }
 
   // ✅ Cache the result before returning
   nodeCornerCache.set(node.id, result);
@@ -785,7 +981,7 @@ interface WallCorners {
  * Note: At node B, we swap left↔right because we're looking at the wall from the opposite direction
  */
 export function buildWallPolygon(wall: Wall, scene: Scene): Vec2[] {
-  log.section(`Building Polygon for Wall ${formatWallId(wall.id)}`);
+  log.section(`Building Polygon for Wall ${formatWallId(wall.id)} (thickness: ${wall.thicknessMm}mm)`);
 
   const nodeA = scene.nodes.get(wall.nodeAId)!;
   const nodeB = scene.nodes.get(wall.nodeBId)!;
@@ -794,11 +990,21 @@ export function buildWallPolygon(wall: Wall, scene: Scene): Vec2[] {
   const perpAB = perpCCW(dirAB);
   const halfThickness = wall.thicknessMm / 2;
 
+  log.substep(`Wall runs from ${formatPoint(nodeA)} to ${formatPoint(nodeB)}`);
+  log.substep(`Direction: (${dirAB.x.toFixed(3)}, ${dirAB.y.toFixed(3)})`);
+  log.substep(`Half thickness: ${halfThickness.toFixed(1)}mm`);
+
   // Fallback points (straight butt joint)
   const baseLeftA = vec.add(nodeA, vec.scale(perpAB, halfThickness));
   const baseRightA = vec.sub(nodeA, vec.scale(perpAB, halfThickness));
   const baseLeftB = vec.add(nodeB, vec.scale(perpAB, halfThickness));
   const baseRightB = vec.sub(nodeB, vec.scale(perpAB, halfThickness));
+
+  log.substep(`Fallback corners (no mitering):`);
+  log.detail(`  A_left: ${formatPoint(baseLeftA)}`);
+  log.detail(`  A_right: ${formatPoint(baseRightA)}`);
+  log.detail(`  B_left: ${formatPoint(baseLeftB)}`);
+  log.detail(`  B_right: ${formatPoint(baseRightB)}`);
 
   // Get mitered corners (uses cache)
   const cornersAtA = computeNodeCornersSegmentBased(nodeA, scene).get(wall.id);
@@ -813,6 +1019,14 @@ export function buildWallPolygon(wall: Wall, scene: Scene): Vec2[] {
   const B_left = cornersAtB?.right ?? baseLeftB;
   const B_right = cornersAtB?.left ?? baseRightB;
   const B_apex = cornersAtB?.apex ?? null;
+
+  log.substep(`Final corners (with mitering):`);
+  log.detail(`  A_left: ${formatPoint(A_left)} ${cornersAtA?.left ? '✅ mitered' : '⚠️ fallback'}`);
+  log.detail(`  A_apex: ${formatPoint(A_apex)}`);
+  log.detail(`  A_right: ${formatPoint(A_right)} ${cornersAtA?.right ? '✅ mitered' : '⚠️ fallback'}`);
+  log.detail(`  B_right: ${formatPoint(B_right)} ${cornersAtB?.left ? '✅ mitered' : '⚠️ fallback'}`);
+  log.detail(`  B_apex: ${formatPoint(B_apex)}`);
+  log.detail(`  B_left: ${formatPoint(B_left)} ${cornersAtB?.right ? '✅ mitered' : '⚠️ fallback'}`);
 
   // Build polygon in CCW order
   const polygon: Vec2[] = [A_left];
