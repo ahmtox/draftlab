@@ -25,6 +25,7 @@ function GuidesLayerComponent({ snapCandidates }: GuidesLayerProps) {
       case 'midpoint': return '#8b5cf6'; // purple
       case 'angle': return '#ef4444'; // red
       case 'guideline': return '#ec4899'; // pink
+      case 'guideline-intersection': return '#ec4899'; // pink (same as guideline)
       default: return '#6b7280'; // gray
     }
   };
@@ -51,16 +52,36 @@ function GuidesLayerComponent({ snapCandidates }: GuidesLayerProps) {
     };
   }, [viewport]);
 
-  // Extract guideline candidates
-  const guidelineCandidates = validCandidates.filter(c => c.type === 'guideline' && c.guideline);
+  // Extract guideline candidates (both single and intersections)
+  const guidelineCandidates = validCandidates.filter(c => 
+    (c.type === 'guideline' && c.guideline) || 
+    (c.type === 'guideline-intersection' && c.guidelines)
+  );
+
+  // Collect all unique guidelines to render
+  const allGuidelines = React.useMemo(() => {
+    const guidelines = new Map<string, any>();
+    
+    for (const candidate of guidelineCandidates) {
+      if (candidate.type === 'guideline' && candidate.guideline) {
+        const key = `${candidate.guideline.type}-${candidate.guideline.value}`;
+        guidelines.set(key, candidate.guideline);
+      } else if (candidate.type === 'guideline-intersection' && candidate.guidelines) {
+        for (const guideline of candidate.guidelines) {
+          const key = `${guideline.type}-${guideline.value}`;
+          guidelines.set(key, guideline);
+        }
+      }
+    }
+    
+    return Array.from(guidelines.values());
+  }, [guidelineCandidates]);
 
   return (
     <Layer listening={false}>
       {/* Render guidelines (dashed pink lines) */}
-      {guidelineCandidates.map((snapCandidate, index) => {
-        if (!snapCandidate.guideline) return null;
-
-        const bounds = getGuidelineVisibleBounds(snapCandidate.guideline, viewportBounds);
+      {allGuidelines.map((guideline, index) => {
+        const bounds = getGuidelineVisibleBounds(guideline, viewportBounds);
         if (!bounds) return null;
 
         const startScreen = worldToScreen(bounds.start, viewport);
@@ -120,7 +141,7 @@ function GuidesLayerComponent({ snapCandidates }: GuidesLayerProps) {
             <Text
               x={snapPointScreen.x + 12}
               y={snapPointScreen.y - 8}
-              text={snapCandidate.type}
+              text={snapCandidate.type === 'guideline-intersection' ? 'intersection' : snapCandidate.type}
               fontSize={11}
               fill={color}
               listening={false}

@@ -23,7 +23,7 @@ import type { Vec2 } from '../../core/math/vec';
 const originalWarn = console.warn;
 console.warn = (...args: any[]) => {
   if (args[0]?.includes?.('Recommended maximum number of layers')) {
-    return; // Skip this specific warning
+    return;
   }
   originalWarn(...args);
 };
@@ -95,7 +95,6 @@ export function Stage() {
           setSelectedWallIds(ctx.selectedWallIds);
         },
         (wallIds, nodePositions) => {
-          // ✅ Mark as live dragging
           useStore.getState().setIsLiveDragging(true);
           
           clearMiterCache();
@@ -113,11 +112,10 @@ export function Stage() {
           setScene({ 
             nodes: newNodes, 
             walls: currentScene.walls,
-            rooms: new Map() // ✅ Clear rooms during drag
-          }, true); // skipRoomDetection = true
+            rooms: new Map()
+          }, true);
         },
         (nodePositions, mergeTargets) => {
-          // ✅ End live drag
           useStore.getState().setIsLiveDragging(false);
           
           history.beginGesture();
@@ -148,8 +146,6 @@ export function Stage() {
 
           history.endGesture({ label: 'Move Selection' });
           
-          // ✅ NEW: Force room re-detection after gesture completes
-          // This ensures rooms are detected even if nodes moved by tiny amounts
           const finalScene = useStore.getState().scene;
           useStore.getState().detectAndUpdateRooms();
         }
@@ -171,11 +167,21 @@ export function Stage() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Shift') setShiftKey(true);
+      if (e.key === 'Shift') {
+        setShiftKey(true);
+        if (activeTool === 'select' && selectToolRef.current) {
+          selectToolRef.current.handleKeyDown(e.key);
+        }
+      }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.key === 'Shift') setShiftKey(false);
+      if (e.key === 'Shift') {
+        setShiftKey(false);
+        if (activeTool === 'select' && selectToolRef.current) {
+          selectToolRef.current.handleKeyUp(e.key);
+        }
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
@@ -185,7 +191,7 @@ export function Stage() {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, []);
+  }, [activeTool]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -329,7 +335,7 @@ export function Stage() {
     <KonvaStage
       width={dimensions.width}
       height={dimensions.height}
-      pixelRatio={window.devicePixelRatio} // ✅ Sharp rendering
+      pixelRatio={window.devicePixelRatio}
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}

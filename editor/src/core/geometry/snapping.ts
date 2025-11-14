@@ -6,7 +6,7 @@ import { screenToWorld } from '../../renderers/konva/viewport';
 import { DEFAULT_TOL } from '../constants';
 import { generateNodeGuidelines, findClosestGuideline, type Guideline } from './guides';
 
-export type SnapType = 'node' | 'grid' | 'edge' | 'midpoint' | 'angle' | 'guideline';
+export type SnapType = 'node' | 'grid' | 'edge' | 'midpoint' | 'angle' | 'guideline' | 'guideline-intersection';
 
 export type SnapCandidate = {
   point: Vec2;          // mm world coords
@@ -15,6 +15,7 @@ export type SnapCandidate = {
   priority: number;     // higher = stronger
   distancePx: number;   // screen-space distance for display
   guideline?: Guideline; // for guideline snaps
+  guidelines?: Guideline[]; // for guideline intersection snaps
 };
 
 export type SnapResult = {
@@ -83,11 +84,44 @@ export function findSnapCandidate(
   // (we'll filter by angle line later if angle snapping is active)
 
   // Guideline snapping (priority 1 - lowest, just alignment aids)
+  // Guideline intersection snapping (priority 6 - higher than single guidelines)
   if (snapToGuidelines) {
     const GUIDELINE_TOLERANCE_MM = 50; // Keep at 50mm always
+    const INTERSECTION_TOLERANCE_MM = 50; // Distance to activate intersection snap
     
     // Pass guidelineOrigin to filter redundant guidelines
     const guidelines = generateNodeGuidelines(scene, excludeNodeIds, guidelineOrigin);
+    
+    // Check for guideline intersections (horizontal + vertical pairs)
+    const horizontalGuidelines = guidelines.filter(g => g.type === 'horizontal');
+    const verticalGuidelines = guidelines.filter(g => g.type === 'vertical');
+    
+    for (const hGuideline of horizontalGuidelines) {
+      for (const vGuideline of verticalGuidelines) {
+        // Intersection point is simply (vGuideline.value, hGuideline.value)
+        const intersection: Vec2 = {
+          x: vGuideline.value,
+          y: hGuideline.value,
+        };
+        
+        // Check if cursor is close to this intersection
+        const distanceMm = vec.distance(cursorWorldMm, intersection);
+        const distancePx = distanceMm * viewport.scale;
+        
+        if (distanceMm <= INTERSECTION_TOLERANCE_MM) {
+          candidates.push({
+            point: intersection,
+            type: 'guideline-intersection',
+            entityId: `${hGuideline.nodeId}-${vGuideline.nodeId}`,
+            priority: 6, // Higher than single guideline (1) but lower than nodes (5)
+            distancePx,
+            guidelines: [hGuideline, vGuideline],
+          });
+        }
+      }
+    }
+    
+    // Single guideline snapping (if no intersection nearby)
     const guidelineSnap = findClosestGuideline(cursorWorldMm, guidelines, GUIDELINE_TOLERANCE_MM);
 
     if (guidelineSnap) {
@@ -192,7 +226,10 @@ export function findSnapCandidate(
       const GUIDELINE_PROXIMITY_MM = 50; // Distance to activate guideline snap
       const guidelines = generateNodeGuidelines(scene, excludeNodeIds, guidelineOrigin);
 
-      // For each guideline, compute intersection with angle line
+      // Check for multiple guideline intersections on the angle line
+      const intersectionsOnAngleLine: Array<{ intersection: Vec2; guidelines: Guideline[] }> = [];
+      
+      // Find all guideline intersections with the angle line
       for (const guideline of guidelines) {
         const intersection = intersectAngleLineWithGuideline(
           angleOrigin,
@@ -208,33 +245,117 @@ export function findSnapCandidate(
           : Math.abs(cursorWorldMm.x - guideline.value);
 
         if (distanceToGuideline <= GUIDELINE_PROXIMITY_MM) {
-          // Snap to the intersection point (locked, no drag)
-          const distanceMm = vec.distance(cursorWorldMm, intersection);
-          const distancePx = distanceMm * viewport.scale;
-
-          return {
-            snapped: true,
-            point: intersection,
-            candidate: {
-              point: intersection,
-              type: 'guideline',
-              entityId: guideline.nodeId,
-              priority: 11, // Boosted priority (guideline on angle line)
-              distancePx,
-              guideline,
-            },
-          };
+          intersectionsOnAngleLine.push({
+            intersection,
+            guidelines: [guideline],
+          });
         }
+      }
+
+      // If we found multiple intersections, check if any are at the same point
+      // (this would be a guideline intersection on the angle line)
+      if (intersectionsOnAngleLine.length > 1) {
+        const SAME_POINT_TOLERANCE = 1.0; // 1mm tolerance
+        
+        for (let i = 0; i < intersectionsOnAngleLine.length; i++) {
+          for (let j = i + 1; j < intersectionsOnAngleLine.length; j++) {
+            const pointA = intersectionsOnAngleLine[i].intersection;
+            const pointB = intersectionsOnAngleLine[j].intersection;
+            
+            if (vec.distance(pointA, pointB) < SAME_POINT_TOLERANCE) {
+              // These guidelines intersect at the same point on the angle line
+              const intersection = pointA; // Use first point
+              const combinedGuidelines = [
+                ...intersectionsOnAngleLine[i].guidelines,
+                ...intersectionsOnAngleLine[j].guidelines,
+              ];
+              
+              const distanceMm = vec.distance(cursorWorldMm, intersection);
+              const distancePx = distanceMm * viewport.scale;
+
+              return {
+                snapped: true,
+                point: intersection,
+                candidate: {
+                  point: intersection,
+                  type: 'guideline-intersection',
+                  entityId: combinedGuidelines.map(g => g.nodeId).join('-'),
+                  priority: 16, // Very high priority (guideline intersection on angle line)
+                  distancePx,
+                  guidelines: combinedGuidelines,
+                },
+              };
+            }
+          }
+        }
+      }
+
+      // Single guideline intersection with angle line
+      if (intersectionsOnAngleLine.length > 0) {
+        // Use the closest intersection to cursor
+        intersectionsOnAngleLine.sort((a, b) => {
+          const distA = vec.distance(cursorWorldMm, a.intersection);
+          const distB = vec.distance(cursorWorldMm, b.intersection);
+          return distA - distB;
+        });
+
+        const closest = intersectionsOnAngleLine[0];
+        const distanceMm = vec.distance(cursorWorldMm, closest.intersection);
+        const distancePx = distanceMm * viewport.scale;
+
+        return {
+          snapped: true,
+          point: closest.intersection,
+          candidate: {
+            point: closest.intersection,
+            type: 'guideline',
+            entityId: closest.guidelines[0].nodeId,
+            priority: 11, // Boosted priority (guideline on angle line)
+            distancePx,
+            guideline: closest.guidelines[0],
+          },
+        };
       }
     }
 
-    // No guideline intersection - filter other candidates by angle line
+    // Filter candidates by angle line (including edges that intersect it)
     const filteredCandidates = candidates.filter((candidate) => {
       // Skip guidelines here (handled above)
-      if (candidate.type === 'guideline') return false;
+      if (candidate.type === 'guideline' || candidate.type === 'guideline-intersection') return false;
 
-      // Use tight tolerance for geometry snaps
-      const tolerance = 1.0; // 1mm for nodes, edges, midpoints, grid
+      // For edges, check if the angle line intersects the edge segment
+      if (candidate.type === 'edge') {
+        // Get the wall's endpoints
+        const wallId = candidate.entityId!;
+        const wall = scene.walls.get(wallId);
+        if (!wall) return false;
+
+        const nodeA = scene.nodes.get(wall.nodeAId);
+        const nodeB = scene.nodes.get(wall.nodeBId);
+        if (!nodeA || !nodeB) return false;
+
+        // Check if angle line intersects with the edge segment
+        const intersection = intersectAngleLineWithSegment(
+          angleOrigin,
+          angleDirection,
+          nodeA,
+          nodeB
+        );
+
+        if (!intersection) return false;
+
+        // Update candidate point to the intersection
+        candidate.point = intersection;
+        
+        // Recalculate distance for proper sorting
+        const distanceMm = vec.distance(cursorWorldMm, intersection);
+        candidate.distancePx = distanceMm * viewport.scale;
+
+        return true;
+      }
+
+      // For other types (node, grid, midpoint), check if they lie on the angle line
+      const tolerance = 1.0; // 1mm for nodes, grid, midpoints
       return isPointOnAngleLine(candidate.point, angleOrigin, angleDirection, tolerance);
     });
 
@@ -305,6 +426,59 @@ export function findSnapCandidate(
     snapped: true,
     point: best.point,
     candidate: best,
+  };
+}
+
+/**
+ * Intersect angle line with a line segment
+ * Returns the intersection point if it exists within the segment bounds
+ */
+function intersectAngleLineWithSegment(
+  angleOrigin: Vec2,
+  angleDirection: Vec2,
+  segmentA: Vec2,
+  segmentB: Vec2
+): Vec2 | null {
+  // Segment direction
+  const segmentDir = vec.sub(segmentB, segmentA);
+  const segmentLength = vec.length(segmentDir);
+  
+  if (segmentLength < 1e-9) return null; // Degenerate segment
+
+  // Solve for intersection:
+  // angleOrigin + t * angleDirection = segmentA + s * segmentDir
+  // 
+  // This gives us two equations:
+  // angleOrigin.x + t * angleDirection.x = segmentA.x + s * segmentDir.x
+  // angleOrigin.y + t * angleDirection.y = segmentA.y + s * segmentDir.y
+  //
+  // Rearranging:
+  // t * angleDirection.x - s * segmentDir.x = segmentA.x - angleOrigin.x
+  // t * angleDirection.y - s * segmentDir.y = segmentA.y - angleOrigin.y
+
+  const dx = segmentA.x - angleOrigin.x;
+  const dy = segmentA.y - angleOrigin.y;
+
+  const denominator = angleDirection.x * segmentDir.y - angleDirection.y * segmentDir.x;
+
+  if (Math.abs(denominator) < 1e-9) {
+    // Lines are parallel
+    return null;
+  }
+
+  const t = (dx * segmentDir.y - dy * segmentDir.x) / denominator;
+  const s = (dx * angleDirection.y - dy * angleDirection.x) / denominator;
+
+  // Check if intersection is forward from angle origin
+  if (t < 0) return null;
+
+  // Check if intersection is within segment bounds
+  if (s < 0 || s > 1) return null;
+
+  // Calculate intersection point
+  return {
+    x: angleOrigin.x + t * angleDirection.x,
+    y: angleOrigin.y + t * angleDirection.y,
   };
 }
 

@@ -9,7 +9,7 @@ import * as vec from '../core/math/vec';
 import { NODE_RADIUS_MM } from '../core/constants';
 
 const MIN_MARQUEE_SIZE_PX = 5;
-const MIN_DRAG_DISTANCE_PX = 10; // ✅ Increased from 3 to 10 pixels
+const MIN_DRAG_DISTANCE_PX = 10;
 
 type DragMode = 'wall' | 'node-a' | 'node-b' | 'marquee';
 
@@ -50,6 +50,7 @@ export class SelectTool {
 
   private originalSceneSnapshot: Scene | null = null;
   private originalNodePositions: Map<string, Vec2> = new Map();
+  private shiftKeyHeld: boolean = false;
 
   constructor(
     private onStateChange: (ctx: SelectToolContext) => void,
@@ -61,24 +62,26 @@ export class SelectTool {
   ) {}
 
   handlePointerDown(screenPx: Vec2, scene: Scene, viewport: Viewport, modifiers: { ctrlKey: boolean; shiftKey: boolean }): void {
+    this.shiftKeyHeld = modifiers.shiftKey;
     const worldPos = screenToWorld(screenPx, viewport);
     
     const nodeRadiusMm = NODE_RADIUS_MM;
     const wallHitRadiusMm = 20 / viewport.scale;
 
-    const hitWallId = hitTestWalls(worldPos, scene, wallHitRadiusMm);
+    // ✅ PRIORITY FIX: Check for node hits on selected walls FIRST
+    // This ensures nodes are "above" walls in the hit-testing hierarchy
+    for (const wallId of this.context.selectedWallIds) {
+      const wall = scene.walls.get(wallId);
+      if (!wall) continue;
 
-    if (hitWallId) {
-      const isSelectedWall = this.context.selectedWallIds.has(hitWallId);
-
-      if (isSelectedWall) {
-        const hitResult = hitTestWallNode(worldPos, hitWallId, scene, nodeRadiusMm);
-        
-        if (this.context.selectedWallIds.size === 1 && (hitResult === 'node-a' || hitResult === 'node-b')) {
-          const wall = scene.walls.get(hitWallId)!;
+      const hitResult = hitTestWallNode(worldPos, wallId, scene, nodeRadiusMm);
+      
+      // If we hit a node on a selected wall, handle it immediately
+      if (hitResult === 'node-a' || hitResult === 'node-b') {
+        // Single wall selected + node hit = single-node drag mode
+        if (this.context.selectedWallIds.size === 1) {
           const nodeA = scene.nodes.get(wall.nodeAId)!;
           const nodeB = scene.nodes.get(wall.nodeBId)!;
-
           const draggedNode = hitResult === 'node-a' ? nodeA : nodeB;
 
           this.originalSceneSnapshot = {
@@ -103,6 +106,22 @@ export class SelectTool {
           return;
         }
 
+        // Multi-wall selected + node hit = multi-wall drag
+        this.startMultiWallDrag(wallId, hitResult as DragMode, worldPos, scene);
+        return;
+      }
+    }
+
+    // Check for wall hits only after checking selected wall nodes
+    const hitWallId = hitTestWalls(worldPos, scene, wallHitRadiusMm);
+
+    if (hitWallId) {
+      const isSelectedWall = this.context.selectedWallIds.has(hitWallId);
+
+      if (isSelectedWall) {
+        // Selected wall hit - check if clicking on body (not node)
+        const hitResult = hitTestWallNode(worldPos, hitWallId, scene, nodeRadiusMm);
+        
         const dragMode = (hitResult === 'node-a' || hitResult === 'node-b' || hitResult === 'wall') 
           ? hitResult as DragMode 
           : 'wall';
@@ -211,6 +230,7 @@ export class SelectTool {
   private getExcludedNodeIds(scene: Scene): Set<string> {
     const excluded = new Set<string>();
 
+    // Only exclude nodes that are part of selected walls
     for (const wallId of this.context.selectedWallIds) {
       const wall = scene.walls.get(wallId);
       if (!wall) continue;
@@ -219,16 +239,7 @@ export class SelectTool {
       excluded.add(wall.nodeBId);
     }
 
-    const connectedNodeIds = new Set(excluded);
-    for (const nodeId of connectedNodeIds) {
-      for (const wall of scene.walls.values()) {
-        if (wall.nodeAId === nodeId || wall.nodeBId === nodeId) {
-          excluded.add(wall.nodeAId);
-          excluded.add(wall.nodeBId);
-        }
-      }
-    }
-
+    // Don't exclude connected nodes - we want their guidelines
     return excluded;
   }
 
@@ -261,7 +272,6 @@ export class SelectTool {
       const dy = screenPx.y - startScreen.y;
       const distance = Math.sqrt(dx * dx + dy * dy);
 
-      // ✅ Only transition to marquee if drag distance exceeds threshold
       if (distance > MIN_DRAG_DISTANCE_PX) {
         this.context = {
           ...this.context,
@@ -282,7 +292,6 @@ export class SelectTool {
       const activeSnaps = new Map<string, string>();
       const snapCandidates: SnapCandidate[] = [];
 
-      const excludedNodeIds = this.getExcludedNodeIds(scene);
       const excludedWallIds = this.getExcludedWallIds(scene);
 
       const filteredScene: Scene = {
@@ -300,9 +309,13 @@ export class SelectTool {
           const dragNodeId = this.context.dragMode === 'node-a' ? wall.nodeAId : wall.nodeBId;
           const anchorNodeId = this.context.dragMode === 'node-a' ? wall.nodeBId : wall.nodeAId;
           
+          const anchorNode = scene.nodes.get(anchorNodeId)!;
           const originalDragPos = this.originalNodePositions.get(dragNodeId)!;
           const tentativePos = vec.add(originalDragPos, delta);
           const tentativeScreenPx = worldToScreen(tentativePos, viewport);
+          
+          // Only exclude the node being dragged for guideline generation
+          const excludedNodeIds = new Set([dragNodeId]);
           
           const snapResult = findSnapCandidate(
             tentativeScreenPx,
@@ -312,7 +325,10 @@ export class SelectTool {
               snapToGrid: true,
               snapToNodes: true,
               snapToEdges: true,
+              snapToAngles: this.shiftKeyHeld,
               snapToGuidelines: true,
+              angleOrigin: anchorNode,
+              guidelineOrigin: anchorNode,
               excludeNodeIds: excludedNodeIds,
             }
           );
@@ -342,6 +358,9 @@ export class SelectTool {
           return;
         }
       }
+
+      // For multi-node drag, exclude all nodes being dragged
+      const excludedNodeIds = this.getExcludedNodeIds(scene);
 
       for (const [nodeId, originalPos] of this.originalNodePositions) {
         const tentativePos = vec.add(originalPos, delta);
@@ -453,7 +472,6 @@ export class SelectTool {
       const nodePositions = new Map<string, { original: Vec2; final: Vec2 }>();
       const mergeTargets = new Map<string, string>();
 
-      const excludedNodeIds = this.getExcludedNodeIds(scene);
       const excludedWallIds = this.getExcludedWallIds(scene);
 
       const filteredScene: Scene = {
@@ -469,10 +487,15 @@ export class SelectTool {
         
         if (wall) {
           const dragNodeId = this.context.dragMode === 'node-a' ? wall.nodeAId : wall.nodeBId;
+          const anchorNodeId = this.context.dragMode === 'node-a' ? wall.nodeBId : wall.nodeAId;
+          const anchorNode = scene.nodes.get(anchorNodeId)!;
           const originalDragPos = this.originalNodePositions.get(dragNodeId)!;
           
           const tentativePos = vec.add(originalDragPos, delta);
           const tentativeScreenPx = worldToScreen(tentativePos, viewport);
+          
+          // Only exclude the node being dragged for guideline generation
+          const excludedNodeIds = new Set([dragNodeId]);
           
           const snapResult = findSnapCandidate(
             tentativeScreenPx,
@@ -482,7 +505,10 @@ export class SelectTool {
               snapToGrid: true,
               snapToNodes: true,
               snapToEdges: true,
+              snapToAngles: this.shiftKeyHeld,
               snapToGuidelines: true,
+              angleOrigin: anchorNode,
+              guidelineOrigin: anchorNode,
               excludeNodeIds: excludedNodeIds,
             }
           );
@@ -505,6 +531,9 @@ export class SelectTool {
           nodePositions.set(dragNodeId, { original: originalDragPos, final: finalPos });
         }
       } else {
+        // For multi-node drag, exclude all nodes being dragged
+        const excludedNodeIds = this.getExcludedNodeIds(scene);
+
         for (const [nodeId, originalPos] of this.originalNodePositions) {
           const tentativePos = vec.add(originalPos, delta);
           const tentativeScreenPx = worldToScreen(tentativePos, viewport);
@@ -624,6 +653,18 @@ export class SelectTool {
     );
   }
 
+  handleKeyDown(key: string): void {
+    if (key === 'Shift') {
+      this.shiftKeyHeld = true;
+    }
+  }
+
+  handleKeyUp(key: string): void {
+    if (key === 'Shift') {
+      this.shiftKeyHeld = false;
+    }
+  }
+
   reset(): void {
     this.context = {
       state: 'idle',
@@ -643,6 +684,7 @@ export class SelectTool {
     };
     this.originalSceneSnapshot = null;
     this.originalNodePositions.clear();
+    this.shiftKeyHeld = false;
     this.onStateChange(this.context);
   }
 
