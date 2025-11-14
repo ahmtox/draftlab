@@ -1,5 +1,6 @@
 import type { Scene, Room } from '../domain/types';
 import { buildHalfEdgeStructure, detectFaces, buildInnerRoomPolygon } from './half-edge';
+import { splitWallsAtIntersections } from './wall-splitting'; // ✅ NEW
 import type { Vec2 } from '../math/vec';
 import * as vec from '../math/vec';
 
@@ -11,23 +12,34 @@ export type DetectedRoom = {
   areaMm2: number;
   perimeterMm: number;
   raiseFromFloorMm: number;
-  labelPositionMm?: { x: number; y: number }; // ✅ NEW: Initialize at centroid
+  labelPositionMm?: { x: number; y: number };
 };
 
 /**
  * Detect rooms using half-edge structure
- * Includes thickness-aware area/perimeter calculation
+ * ✅ NEW: Preprocesses scene to split walls at intersections
  */
 export function detectRooms(scene: Scene): DetectedRoom[] {
   if (scene.walls.size < 3) {
     return [];
   }
 
-  // Build half-edge structure
-  const halfEdges = buildHalfEdgeStructure(scene);
+  // ✅ NEW: Split walls at intersections BEFORE building half-edge structure
+  const splitScene = splitWallsAtIntersections(scene);
+  
+  // Build half-edge structure using split walls
+  const halfEdges = buildHalfEdgeStructure({
+    nodes: splitScene.nodes,
+    walls: splitScene.walls,
+    rooms: new Map(), // Unused during detection
+  });
 
   // Detect faces
-  const faces = detectFaces(halfEdges, scene);
+  const faces = detectFaces(halfEdges, {
+    nodes: splitScene.nodes,
+    walls: splitScene.walls,
+    rooms: new Map(),
+  });
 
   // Filter to interior faces
   const interiorFaces = faces.filter(face => !face.isOuter);
@@ -46,17 +58,34 @@ export function detectRooms(scene: Scene): DetectedRoom[] {
   }> = [];
 
   for (const face of interiorFaces) {
-    // Extract wall IDs
-    const wallIds = Array.from(new Set(
-      face.edges.map(heId => halfEdges.get(heId)?.wallId).filter(Boolean) as string[]
-    ));
+    // ✅ Extract ORIGINAL wall IDs (before splitting)
+    const originalWallIds = new Set<string>();
+    
+    for (const heId of face.edges) {
+      const he = halfEdges.get(heId);
+      if (!he) continue;
+      
+      // Extract base wall ID (strip -split-N suffix)
+      const baseWallId = he.wallId.split('-split-')[0];
+      originalWallIds.add(baseWallId);
+    }
 
+    const wallIds = Array.from(originalWallIds);
+    
     if (wallIds.length < 3) {
       continue;
     }
 
-    // Build thickness-aware inner polygon
-    const innerPolygon = buildInnerRoomPolygon(face.edges, halfEdges, scene);
+    // Build thickness-aware inner polygon using split scene
+    const innerPolygon = buildInnerRoomPolygon(
+      face.edges, 
+      halfEdges, 
+      {
+        nodes: splitScene.nodes,
+        walls: splitScene.walls,
+        rooms: new Map(),
+      }
+    );
     
     if (innerPolygon.length < 3) {
       continue;
@@ -75,7 +104,7 @@ export function detectRooms(scene: Scene): DetectedRoom[] {
     candidateRooms.push({
       faceId: face.id,
       halfEdgeIds: face.edges,
-      wallIds,
+      wallIds, // ✅ Use original wall IDs (not split IDs)
       innerPolygon,
       area,
       perimeter,
@@ -89,7 +118,6 @@ export function detectRooms(scene: Scene): DetectedRoom[] {
   const rooms: DetectedRoom[] = candidateRooms.map((candidate, index) => {
     const roomId = `room-${Date.now()}-${index + 1}`;
     
-    // ✅ NEW: Compute centroid for initial label position
     const centroid = computePolygonCentroid(candidate.innerPolygon);
     
     return {
@@ -100,7 +128,7 @@ export function detectRooms(scene: Scene): DetectedRoom[] {
       areaMm2: candidate.area,
       perimeterMm: candidate.perimeter,
       raiseFromFloorMm: 100,
-      labelPositionMm: centroid, // ✅ Initialize at centroid
+      labelPositionMm: centroid,
     };
   });
 

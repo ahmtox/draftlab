@@ -5,6 +5,7 @@ import { useStore } from '../../state/store';
 import { worldToScreen, screenToWorld } from '../../renderers/konva/viewport';
 import { buildWallPolygon } from '../../core/geometry/miter';
 import { buildHalfEdgeStructure, buildInnerRoomPolygon } from '../../core/topology/half-edge';
+import { splitWallsAtIntersections } from '../../core/topology/wall-splitting'; // ✅ NEW
 import type { Vec2 } from '../../core/math/vec';
 import * as vec from '../../core/math/vec';
 
@@ -59,11 +60,22 @@ function RayVisualizationComponent() {
 
   // ✅ Room visualization takes priority
   if (selectedRoom) {
-    const halfEdges = buildHalfEdgeStructure(scene);
+    // ✅ Build half-edges from split scene
+    const splitScene = splitWallsAtIntersections(scene);
+    const halfEdges = buildHalfEdgeStructure({
+      nodes: splitScene.nodes,
+      walls: splitScene.walls,
+      rooms: new Map(),
+    });
+    
     const roomPolygonMm = buildInnerRoomPolygon(
       selectedRoom.halfEdges,
       halfEdges,
-      scene
+      {
+        nodes: splitScene.nodes,
+        walls: splitScene.walls,
+        rooms: new Map(),
+      }
     );
 
     // Check which vertex is being hovered

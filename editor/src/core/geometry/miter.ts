@@ -24,6 +24,23 @@ const MAX_MITER_LENGTH_RATIO = 10; // Prevent infinite spikes at shallow angles
 const COLLINEAR_ANGLE_THRESHOLD = 0.0001; // ~0.006° - extremely tight for true collinearity
 
 // ============================================================================
+// Caching System
+// ============================================================================
+
+/**
+ * Cache for node corner computations
+ * Key: nodeId, Value: Map of wallId -> WallCorners
+ */
+const nodeCornerCache = new Map<string, Map<string, WallCorners>>();
+
+/**
+ * Clear the miter cache (call when scene topology changes)
+ */
+export function clearMiterCache(): void {
+  nodeCornerCache.clear();
+}
+
+// ============================================================================
 // Logging Utilities
 // ============================================================================
 
@@ -283,8 +300,15 @@ interface EdgeIntersection {
  * Compute corner points for all walls meeting at a node using segment intersection
  * FIXED: Proper collinear wall handling for 2-wall straight-through connections
  * FIXED: Non-collinear wall gets apex from collinear walls' non-intersecting edges
+ * ✅ NEW: Cached results per node
  */
 function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, WallCorners> {
+  // ✅ Check cache first
+  const cached = nodeCornerCache.get(node.id);
+  if (cached) {
+    return cached;
+  }
+
   log.section(`Computing Corners for Node ${formatWallId(node.id)}`);
 
   const result = new Map<string, WallCorners>();
@@ -299,6 +323,7 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
   );
 
   if (incidentWalls.length === 0) {
+    nodeCornerCache.set(node.id, result); // ✅ Cache empty result
     return result;
   }
 
@@ -343,6 +368,7 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
     }
 
     log.result('Straight-through butt joints assigned');
+    nodeCornerCache.set(node.id, result); // ✅ Cache result
     return result;
   }
 
@@ -728,6 +754,9 @@ function computeNodeCornersSegmentBased(node: Node, scene: Scene): Map<string, W
 
   log.result('Apex points computed');
 
+  // ✅ Cache the result before returning
+  nodeCornerCache.set(node.id, result);
+
   return result;
 }
 
@@ -771,7 +800,7 @@ export function buildWallPolygon(wall: Wall, scene: Scene): Vec2[] {
   const baseLeftB = vec.add(nodeB, vec.scale(perpAB, halfThickness));
   const baseRightB = vec.sub(nodeB, vec.scale(perpAB, halfThickness));
 
-  // Get mitered corners
+  // Get mitered corners (uses cache)
   const cornersAtA = computeNodeCornersSegmentBased(nodeA, scene).get(wall.id);
   const cornersAtB = computeNodeCornersSegmentBased(nodeB, scene).get(wall.id);
 

@@ -6,6 +6,7 @@ import { DEFAULT_ZOOM_SCALE } from '../core/constants';
 import type { Vec2 } from '../core/math/vec';
 import { History } from '../core/commands/history';
 import { detectRooms } from '../core/topology/room-detect';
+import { clearMiterCache } from '../core/geometry/miter';
 
 type WallParams = {
   thicknessMm: number;
@@ -37,11 +38,12 @@ type UIState = {
   snapCandidateB: any | null;
   viewMode: '2D' | '3D';
   history: History;
+  isLiveDragging: boolean; // ✅ NEW
   
   setViewport: (viewport: Viewport) => void;
   setActiveTool: (tool: 'select' | 'wall' | 'room' | 'measure') => void;
   setWallParams: (params: WallParams) => void;
-  setScene: (scene: Scene) => void;
+  setScene: (scene: Scene, skipRoomDetection?: boolean) => void; // ✅ NEW parameter
   setCurrentProject: (project: ProjectMeta | null) => void;
   setLastSavedAt: (timestamp: number) => void;
   setIsSaving: (saving: boolean) => void;
@@ -53,6 +55,7 @@ type UIState = {
   setSnapCandidateA: (candidate: any | null) => void;
   setSnapCandidateB: (candidate: any | null) => void;
   setViewMode: (mode: '2D' | '3D') => void;
+  setIsLiveDragging: (dragging: boolean) => void; // ✅ NEW
   undo: () => void;
   redo: () => void;
   detectAndUpdateRooms: () => void;
@@ -92,20 +95,27 @@ export const useStore = create<UIState>((set, get) => ({
   snapCandidateB: null,
   viewMode: '2D',
   history: new History(),
+  isLiveDragging: false, // ✅ NEW
 
   setViewport: (viewport) => set({ viewport }),
   setActiveTool: (tool) => set({ activeTool: tool }),
   setWallParams: (params) => set({ wallParams: params }),
   
-  setScene: (scene) => {
+  setScene: (scene, skipRoomDetection = false) => { // ✅ NEW parameter
     const currentScene = get().scene;
     
-    // ✅ Check if walls or nodes actually changed
+    // ✅ Clear miter cache whenever scene changes
+    clearMiterCache();
+    
+    // Check if walls or nodes actually changed
     const wallsChanged = currentScene.walls !== scene.walls;
     const nodesChanged = currentScene.nodes !== scene.nodes;
     
-    // ✅ Only re-detect rooms if wall/node topology changed
-    if (wallsChanged || nodesChanged) {
+    // ✅ Only re-detect rooms if:
+    // 1. Wall/node topology changed AND
+    // 2. We're NOT in live drag mode AND
+    // 3. skipRoomDetection is false
+    if ((wallsChanged || nodesChanged) && !skipRoomDetection && !get().isLiveDragging) {
       const currentRooms = currentScene.rooms;
       
       // Auto-detect rooms based on new topology
@@ -130,7 +140,7 @@ export const useStore = create<UIState>((set, get) => ({
               ...detectedRoom,
               id: existingRoom.id,
               roomNumber: existingRoom.roomNumber,
-              labelPositionMm: existingRoom.labelPositionMm, // ✅ Preserve custom position
+              labelPositionMm: existingRoom.labelPositionMm,
             }];
           }
 
@@ -146,7 +156,7 @@ export const useStore = create<UIState>((set, get) => ({
         }
       });
     } else {
-      // ✅ Walls/nodes didn't change - just update scene directly (preserves room changes)
+      // Walls/nodes didn't change OR we're in live drag - just update scene directly
       set({ scene });
     }
   },
@@ -163,6 +173,7 @@ export const useStore = create<UIState>((set, get) => ({
   setSnapCandidateA: (candidate) => set({ snapCandidateA: candidate }),
   setSnapCandidateB: (candidate) => set({ snapCandidateB: candidate }),
   setViewMode: (mode) => set({ viewMode: mode }),
+  setIsLiveDragging: (dragging) => set({ isLiveDragging: dragging }), // ✅ NEW
 
   resetProject: () => set({
     scene: {
@@ -183,6 +194,7 @@ export const useStore = create<UIState>((set, get) => ({
     snapCandidateA: null,
     snapCandidateB: null,
     history: new History(),
+    isLiveDragging: false, // ✅ NEW
   }),
 
   undo: () => {

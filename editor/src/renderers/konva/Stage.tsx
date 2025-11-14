@@ -17,6 +17,7 @@ import { AddWallCommand } from '../../core/commands/add-wall';
 import { MoveNodeCommand } from '../../core/commands/move-node';
 import { MergeNodesCommand } from '../../core/commands/merge-nodes';
 import { DeleteWallsCommand } from '../../core/commands/delete-walls';
+import { clearMiterCache } from '../../core/geometry/miter';
 import type { Vec2 } from '../../core/math/vec';
 
 export function Stage() {
@@ -44,7 +45,6 @@ export function Stage() {
   const [selectToolContext, setSelectToolContext] = useState<any>(null);
   const [measureToolContext, setMeasureToolContext] = useState<any>(null);
 
-  // Track Shift key state
   const [shiftKey, setShiftKey] = useState(false);
 
   useEffect(() => {
@@ -87,7 +87,11 @@ export function Stage() {
           setSelectedWallIds(ctx.selectedWallIds);
         },
         (wallIds, nodePositions) => {
-          // Live preview during drag
+          // ✅ Mark as live dragging
+          useStore.getState().setIsLiveDragging(true);
+          
+          clearMiterCache();
+          
           const currentScene = useStore.getState().scene;
           const newNodes = new Map(currentScene.nodes);
 
@@ -98,14 +102,17 @@ export function Stage() {
             }
           }
 
+          // ✅ Skip room detection during live drag
           setScene({ 
             nodes: newNodes, 
             walls: currentScene.walls,
             rooms: currentScene.rooms
-          });
+          }, true); // ✅ skipRoomDetection = true
         },
         (nodePositions, mergeTargets) => {
-          // Commit multi-wall drag
+          // ✅ End live drag
+          useStore.getState().setIsLiveDragging(false);
+          
           history.beginGesture();
 
           for (const [nodeId, { original, final }] of nodePositions) {
@@ -310,6 +317,7 @@ export function Stage() {
     <KonvaStage
       width={dimensions.width}
       height={dimensions.height}
+      pixelRatio={window.devicePixelRatio} // ✅ Sharp rendering
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
@@ -322,21 +330,11 @@ export function Stage() {
         cursor: getCursorStyle()
       }}
     >
-      {/* ✅ Z-ORDER (Bottom to Top) - Room Labels ABOVE Walls */}
-      
-      {/* 1. Grid Layer (bottom) */}
       <GridLayer />
-      
-      {/* 2. Room fills (below walls) */}
       <RoomFillsLayer />
-      
-      {/* 3. Walls Layer */}
       <WallsLayer />
-      
-      {/* 4. Room labels (ABOVE walls - receives events first) */}
       <RoomLabelsLayer />
       
-      {/* 5. Preview layers */}
       {showWallPreview && (
         <PreviewLayer
           previewWall={{
@@ -354,10 +352,8 @@ export function Stage() {
         />
       )}
 
-      {/* 6. Guides layer */}
       <GuidesLayer snapCandidates={allSnapCandidates} />
 
-      {/* 7. Marquee selection */}
       {selectToolContext?.state === 'marquee' && (
         <MarqueeLayer
           marqueeStart={selectToolContext.marqueeStart}
@@ -365,10 +361,7 @@ export function Stage() {
         />
       )}
 
-      {/* 8. Measure layer */}
       <MeasureLayer measureContext={measureToolContext} />
-
-      {/* 9. Debug: Ray visualization (top) */}
       <RayVisualization />
     </KonvaStage>
   );

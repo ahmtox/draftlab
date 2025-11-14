@@ -3,6 +3,7 @@ import { useStore } from '../../state/store';
 import { screenToWorld } from '../../renderers/konva/viewport';
 import { buildWallPolygon } from '../../core/geometry/miter';
 import { buildHalfEdgeStructure, buildInnerRoomPolygon } from '../../core/topology/half-edge';
+import { splitWallsAtIntersections } from '../../core/topology/wall-splitting'; // ✅ NEW
 import type { Vec2 } from '../../core/math/vec';
 
 export function DebugOverlay() {
@@ -55,14 +56,24 @@ export function DebugOverlay() {
     polygonPoints = buildWallPolygon(selectedWall, scene);
   }
 
-  // ✅ NEW: Get room polygon points
+  // ✅ NEW: Get room polygon points using split scene
   let roomPolygonPoints: Vec2[] = [];
   if (selectedRoom) {
-    const halfEdges = buildHalfEdgeStructure(scene);
+    const splitScene = splitWallsAtIntersections(scene);
+    const halfEdges = buildHalfEdgeStructure({
+      nodes: splitScene.nodes,
+      walls: splitScene.walls,
+      rooms: new Map(),
+    });
+    
     roomPolygonPoints = buildInnerRoomPolygon(
       selectedRoom.halfEdges,
       halfEdges,
-      scene
+      {
+        nodes: splitScene.nodes,
+        walls: splitScene.walls,
+        rooms: new Map(),
+      }
     );
   }
 

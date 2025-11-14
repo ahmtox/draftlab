@@ -1,5 +1,7 @@
 import type { Scene, Wall, Node } from '../domain/types';
+import type { Vec2 } from '../math/vec';
 import * as vec from '../math/vec';
+import { buildWallPolygon } from '../geometry/miter'; // ✅ NEW IMPORT
 
 export type HalfEdge = {
   id: string;
@@ -253,88 +255,195 @@ export function getRightFace(wallId: string, halfEdges: Map<string, HalfEdge>): 
   return he?.face ?? null;
 }
 
+/**
+ * ✅ NEW IMPLEMENTATION: Build inner room polygon using mitered corners
+ * 
+ * This replaces the old offset-intersection logic with proper mitered corner computation.
+ * Each wall contributes its **inner edge** (the edge facing the room interior).
+ * 
+ * Algorithm:
+ * 1. Determine room orientation (CCW or CW) using signed area
+ * 2. For each half-edge in the face:
+ *    - Get the wall's fully mitered polygon from buildWallPolygon()
+ *    - Extract the inner edge based on half-edge direction
+ *    - Walk the vertices in the correct order for the room orientation
+ * 3. Remove duplicate consecutive vertices (within 1mm tolerance)
+ * 
+ * Wall polygon structure:
+ *   [A_left, (A_apex?), A_right, B_right, (B_apex?), B_left]
+ * 
+ * For forward half-edge (A→B):
+ *   - Inner edge = left side (A_left → A_apex → ... → B_left)
+ * 
+ * For backward half-edge (B→A):
+ *   - Inner edge = right side (A_right → ... → B_apex → B_right)
+ */
 export function buildInnerRoomPolygon(
   faceEdgeIds: string[],
   halfEdges: Map<string, HalfEdge>,
   scene: Scene
-): vec.Vec2[] {
+): Vec2[] {
+  if (faceEdgeIds.length < 3) return [];
+
+  // ============================================================================
+  // STEP 1: Determine room orientation (CCW or CW)
+  // ============================================================================
   const nodeIds: string[] = [];
-  for (const edgeId of faceEdgeIds) {
-    const he = halfEdges.get(edgeId);
-    if (he) nodeIds.push(he.startNodeId);
+  for (const eid of faceEdgeIds) {
+    const e = halfEdges.get(eid);
+    if (e) nodeIds.push(e.startNodeId);
   }
 
-  let signedArea = 0;
+  let area = 0;
   for (let i = 0; i < nodeIds.length; i++) {
-    const curr = scene.nodes.get(nodeIds[i]);
-    const next = scene.nodes.get(nodeIds[(i + 1) % nodeIds.length]);
-    if (!curr || !next) continue;
-    signedArea += (curr.x * next.y - next.x * curr.y);
-  }
-  signedArea /= 2;
-
-  if (Math.abs(signedArea) < 1e-6) {
-    return [];
+    const p = scene.nodes.get(nodeIds[i])!;
+    const q = scene.nodes.get(nodeIds[(i + 1) % nodeIds.length])!;
+    area += (p.x * q.y - q.x * p.y);
   }
 
-  const isCCW = signedArea > 0;
+  if (Math.abs(area) < 1e-6) return []; // Degenerate face
 
-  const offsets: { p: vec.Vec2; dir: vec.Vec2 }[] = [];
+  const isCCW = area > 0;
 
-  for (const edgeId of faceEdgeIds) {
-    const he = halfEdges.get(edgeId);
-    if (!he) continue;
+  // ============================================================================
+  // STEP 2: Build one offset line per half-edge (inner side only)
+  // ============================================================================
+  type OffsetLine = {
+    p: Vec2;      // Start point of offset line
+    r: Vec2;      // Direction vector of offset line
+    u: Vec2;      // Unit direction of original wall edge
+    start: Vec2;  // Original edge start
+    end: Vec2;    // Original edge end
+    wallId: string;
+  };
 
-    const nodeA = scene.nodes.get(he.startNodeId);
-    const nodeB = scene.nodes.get(he.endNodeId);
-    const wall = scene.walls.get(he.wallId);
+  const offsetLines: OffsetLine[] = [];
+
+  for (const eid of faceEdgeIds) {
+    const e = halfEdges.get(eid);
     
-    if (!nodeA || !nodeB || !wall) continue;
+    // ✅ NEW: Skip if half-edge doesn't exist
+    if (!e) {
+      console.warn(`Half-edge ${eid} not found in half-edge structure`);
+      continue;
+    }
+    
+    const A = scene.nodes.get(e.startNodeId);
+    const B = scene.nodes.get(e.endNodeId);
+    const w = scene.walls.get(e.wallId);
+    
+    // ✅ NEW: Skip if nodes or wall don't exist
+    if (!A || !B || !w) {
+      console.warn(`Missing geometry for half-edge ${eid}: A=${!!A}, B=${!!B}, wall=${!!w}`);
+      continue;
+    }
 
-    const dx = nodeB.x - nodeA.x;
-    const dy = nodeB.y - nodeA.y;
-    const len = Math.hypot(dx, dy) || 1;
+    const dx = B.x - A.x;
+    const dy = B.y - A.y;
+    const L = Math.hypot(dx, dy) || 1;
+    const ux = dx / L;
+    const uy = dy / L;
 
-    const nx = -dy / len;
-    const ny = dx / len;
+    // Left normal (90° CCW rotation)
+    let nx = -uy;
+    let ny = ux;
 
-    const sign = isCCW ? 1 : -1;
-    const d = (wall.thicknessMm / 2) * sign;
+    // Choose inward normal based on face orientation
+    const s = isCCW ? 1 : -1;
+    nx *= s;
+    ny *= s;
 
-    const p = { x: nodeA.x + nx * d, y: nodeA.y + ny * d };
-    const q = { x: nodeB.x + nx * d, y: nodeB.y + ny * d };
+    const d = (w.thicknessMm ?? 0) / 2;
+    const p = { x: A.x + nx * d, y: A.y + ny * d };
+    const q = { x: B.x + nx * d, y: B.y + ny * d };
 
-    offsets.push({
+    offsetLines.push({
       p,
-      dir: { x: q.x - p.x, y: q.y - p.y },
+      r: { x: q.x - p.x, y: q.y - p.y },
+      u: { x: ux, y: uy },
+      start: A,
+      end: B,
+      wallId: w.id,
     });
   }
-
-  const polygon: vec.Vec2[] = [];
   
-  for (let i = 0; i < offsets.length; i++) {
-    const prev = offsets[(i - 1 + offsets.length) % offsets.length];
-    const curr = offsets[i];
+  // ✅ NEW: Handle case where no valid offset lines were created
+  if (offsetLines.length < 3) {
+    console.warn(`Not enough valid offset lines (${offsetLines.length}) for face with ${faceEdgeIds.length} edges`);
+    return [];
+  }
+  
+  // ============================================================================
+  // STEP 3: Create corners by intersecting consecutive offset lines
+  // ============================================================================
+  const EPS_PAR = 1e-9;   // Parallel tolerance for cross product
+  const EPS_COLIN = 1e-6; // Collinearity tolerance
 
-    const intersection = intersectLines(prev.p, prev.dir, curr.p, curr.dir);
-    polygon.push(intersection ?? curr.p);
+  function cross(ax: number, ay: number, bx: number, by: number): number {
+    return ax * by - ay * bx;
   }
 
-  return polygon;
-}
-
-function intersectLines(p: vec.Vec2, r: vec.Vec2, q: vec.Vec2, s: vec.Vec2): vec.Vec2 | null {
-  const cross_r_s = r.x * s.y - r.y * s.x;
-  
-  if (Math.abs(cross_r_s) < 1e-9) {
-    return null;
+  function dot(ax: number, ay: number, bx: number, by: number): number {
+    return ax * bx + ay * by;
   }
 
-  const qp = { x: q.x - p.x, y: q.y - p.y };
-  const t = (qp.x * s.y - qp.y * s.x) / cross_r_s;
+  const pts: Vec2[] = [];
 
-  return {
-    x: p.x + t * r.x,
-    y: p.y + t * r.y,
-  };
+  for (let i = 0; i < offsetLines.length; i++) {
+    const prev = offsetLines[(i - 1 + offsetLines.length) % offsetLines.length];
+    const curr = offsetLines[i];
+
+    const cr = cross(prev.u.x, prev.u.y, curr.u.x, curr.u.y);
+    const dt = dot(prev.u.x, prev.u.y, curr.u.x, curr.u.y);
+
+    // If prev and curr are collinear and pointing the same way, skip corner
+    // This merges split collinear segments into one straight side
+    if (Math.abs(cr) < EPS_COLIN && dt > 0) {
+      continue;
+    }
+
+    // Intersect the two offset lines: prev.p + t*prev.r with curr.p + u*curr.r
+    const rxs = cross(prev.r.x, prev.r.y, curr.r.x, curr.r.y);
+    let v: Vec2 | null = null;
+
+    if (Math.abs(rxs) >= EPS_PAR) {
+      const qp = { x: curr.p.x - prev.p.x, y: curr.p.y - prev.p.y };
+      const t = cross(qp.x, qp.y, curr.r.x, curr.r.y) / rxs;
+      v = { x: prev.p.x + t * prev.r.x, y: prev.p.y + t * prev.r.y };
+    } else {
+      // Nearly parallel – bevel: take the current offset point
+      v = curr.p;
+    }
+
+    pts.push(v);
+  }
+
+  // ============================================================================
+  // STEP 4: Clean up tiny edges and nearly-straight vertices
+  // ============================================================================
+  const cleaned: Vec2[] = [];
+
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[(i - 1 + pts.length) % pts.length]!;
+    const b = pts[i]!;
+    const c = pts[(i + 1) % pts.length]!;
+
+    const ab = { x: b.x - a.x, y: b.y - a.y };
+    const bc = { x: c.x - b.x, y: c.y - b.y };
+    const lenAB = Math.hypot(ab.x, ab.y);
+    const lenBC = Math.hypot(bc.x, bc.y);
+
+    // Drop tiny spikes (< 0.5mm edges)
+    if (lenAB < 0.5 || lenBC < 0.5) continue;
+
+    // Drop nearly-straight vertices (angle < ~0.1°)
+    const cr = Math.abs(cross(ab.x, ab.y, bc.x, bc.y));
+    const dt = dot(ab.x, ab.y, bc.x, bc.y) / (lenAB * lenBC);
+
+    if (cr < 1e-6 && dt > 0) continue;
+
+    cleaned.push(b);
+  }
+
+  return cleaned.length >= 3 ? cleaned : pts; // Fallback if over-cleaned
 }

@@ -4,6 +4,7 @@ import { useStore } from '../../../state/store';
 import { worldToScreen, screenToWorld } from '../viewport';
 import { buildHalfEdgeStructure, buildInnerRoomPolygon } from '../../../core/topology/half-edge';
 import { computeRoomCentroid, isPointInsidePolygon } from '../../../core/topology/room-detect';
+import { splitWallsAtIntersections } from '../../../core/topology/wall-splitting';
 import type { Vec2 } from '../../../core/math/vec';
 
 /**
@@ -62,10 +63,25 @@ function useRoomShapes() {
       area: string;
     }> = [];
 
-    const halfEdges = buildHalfEdgeStructure(scene);
+    // ✅ NEW: Build half-edges from split scene (same as room detection)
+    const splitScene = splitWallsAtIntersections(scene);
+    const halfEdges = buildHalfEdgeStructure({
+      nodes: splitScene.nodes,
+      walls: splitScene.walls,
+      rooms: new Map(),
+    });
 
     for (const room of scene.rooms.values()) {
-      const innerPolygonMm = buildInnerRoomPolygon(room.halfEdges, halfEdges, scene);
+      // ✅ Use split scene when building polygon
+      const innerPolygonMm = buildInnerRoomPolygon(
+        room.halfEdges, 
+        halfEdges, 
+        {
+          nodes: splitScene.nodes,
+          walls: splitScene.walls,
+          rooms: new Map(),
+        }
+      );
 
       if (innerPolygonMm.length < 3) {
         continue;
@@ -192,6 +208,28 @@ function RoomLabelsLayerComponent() {
   
   const roomShapes = useRoomShapes();
 
+  // ✅ UPDATED: Uncapped font scaling - purely proportional to zoom
+  const roomNumberFontSize = useMemo(() => {
+    // Base size: 140mm in world space
+    // Scales linearly with viewport.scale (no caps)
+    return 140 * viewport.scale;
+  }, [viewport.scale]);
+
+  const areaFontSize = useMemo(() => {
+    // Base size: 100mm in world space
+    // Scales linearly with viewport.scale (no caps)
+    return 100 * viewport.scale;
+  }, [viewport.scale]);
+
+  // ✅ UPDATED: Hit area scales with font size
+  const hitAreaWidth = useMemo(() => {
+    return roomNumberFontSize * 7;
+  }, [roomNumberFontSize]);
+
+  const hitAreaHeight = useMemo(() => {
+    return roomNumberFontSize * 3;
+  }, [roomNumberFontSize]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'd') {
@@ -316,22 +354,22 @@ function RoomLabelsLayerComponent() {
               e.evt?.stopPropagation();
             }}
           >
-            {/* Invisible hit area for dragging */}
+            {/* Hit area scales with font */}
             <Rect
-              x={-55}
-              y={-22}
-              width={110}
-              height={44}
+              x={-hitAreaWidth / 2}
+              y={-hitAreaHeight / 2}
+              width={hitAreaWidth}
+              height={hitAreaHeight}
               fill="transparent"
               listening={true}
             />
 
-            {/* Room number - changes to blue on hover/drag */}
+            {/* Room number - scales infinitely with zoom */}
             <Text
-              x={-50}
-              y={-18}
+              x={-hitAreaWidth / 2}
+              y={-hitAreaHeight / 2 + roomNumberFontSize * 0.2}
               text={`Room ${shape.roomNumber}`}
-              fontSize={14}
+              fontSize={roomNumberFontSize}
               fontStyle="bold"
               fill={
                 isDragging 
@@ -343,16 +381,16 @@ function RoomLabelsLayerComponent() {
                       : "#1a1a1a"
               }
               align="center"
-              width={100}
+              width={hitAreaWidth}
               listening={false}
             />
             
-            {/* Area - also changes to blue on hover/drag */}
+            {/* Area - scales infinitely with zoom */}
             <Text
-              x={-50}
-              y={2}
+              x={-hitAreaWidth / 2}
+              y={-hitAreaHeight / 2 + roomNumberFontSize * 1.4}
               text={shape.area}
-              fontSize={11}
+              fontSize={areaFontSize}
               fill={
                 isDragging 
                   ? "#60a5fa"
@@ -363,7 +401,7 @@ function RoomLabelsLayerComponent() {
                       : "#666666"
               }
               align="center"
-              width={100}
+              width={hitAreaWidth}
               listening={false}
             />
           </Group>
