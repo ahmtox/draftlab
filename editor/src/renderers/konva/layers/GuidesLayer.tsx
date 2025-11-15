@@ -102,6 +102,9 @@ function GuidesLayerComponent({ snapCandidates }: GuidesLayerProps) {
 
       {/* Render snap indicators */}
       {validCandidates.map((snapCandidate, index) => {
+        // ✅ Check if this is a visual-only guideline (used by intersections)
+        const isVisualOnly = snapCandidate.entityId?.startsWith('__visual_only__');
+        
         const snapPointScreen = worldToScreen(snapCandidate.point, viewport);
         const color = getSnapColor(snapCandidate.type);
 
@@ -137,15 +140,17 @@ function GuidesLayerComponent({ snapCandidates }: GuidesLayerProps) {
               listening={false}
             />
 
-            {/* Label */}
-            <Text
-              x={snapPointScreen.x + 12}
-              y={snapPointScreen.y - 8}
-              text={snapCandidate.type === 'guideline-intersection' ? 'intersection' : snapCandidate.type}
-              fontSize={11}
-              fill={color}
-              listening={false}
-            />
+            {/* ✅ Only render label if NOT visual-only */}
+            {!isVisualOnly && (
+              <Text
+                x={snapPointScreen.x + 12}
+                y={snapPointScreen.y - 8}
+                text={snapCandidate.type === 'guideline-intersection' ? 'intersection' : snapCandidate.type}
+                fontSize={11}
+                fill={color}
+                listening={false}
+              />
+            )}
           </React.Fragment>
         );
       })}

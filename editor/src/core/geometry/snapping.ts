@@ -46,6 +46,201 @@ export type SnapResult = {
  */
 
 /**
+ * ✅ NEW: Find ALL snap candidates near a point (for visual feedback)
+ * Unlike findSnapCandidate which returns only the best snap, this returns all valid candidates
+ * within snap radius so that multiple guides can be shown simultaneously
+ */
+export function findAllSnapCandidates(
+  cursorScreenPx: Vec2,
+  scene: Scene,
+  viewport: Viewport,
+  options: {
+    snapToGrid?: boolean;
+    snapToNodes?: boolean;
+    snapToEdges?: boolean;
+    snapToAngles?: boolean;
+    snapToGuidelines?: boolean;
+    angleOrigin?: Vec2;
+    excludeNodeIds?: Set<string>;
+    guidelineOrigin?: Vec2;
+  } = {}
+): SnapCandidate[] {
+  const {
+    snapToGrid = true,
+    snapToNodes = true,
+    snapToEdges = true,
+    snapToAngles = false,
+    snapToGuidelines = false,
+    angleOrigin = null,
+    excludeNodeIds = new Set(),
+    guidelineOrigin = null,
+  } = options;
+
+  const cursorWorldMm = screenToWorld(cursorScreenPx, viewport);
+  const candidates: SnapCandidate[] = [];
+
+  const TOLERANCE_MM = 1.0; // Tolerance for "at same position" checks
+
+  // If angle snapping is active, compute the snapped angle
+  let snappedAngleRad: number | null = null;
+  let angleDirection: Vec2 | null = null;
+
+  if (snapToAngles && angleOrigin) {
+    const ANGLE_INCREMENT_DEG = 15;
+    const ANGLE_INCREMENT_RAD = (ANGLE_INCREMENT_DEG * Math.PI) / 180;
+
+    const delta = vec.sub(cursorWorldMm, angleOrigin);
+    const distance = vec.length(delta);
+
+    if (distance >= 1) {
+      const currentAngle = Math.atan2(delta.y, delta.x);
+      snappedAngleRad = Math.round(currentAngle / ANGLE_INCREMENT_RAD) * ANGLE_INCREMENT_RAD;
+      angleDirection = {
+        x: Math.cos(snappedAngleRad),
+        y: Math.sin(snappedAngleRad),
+      };
+    }
+  }
+
+  // Collect all candidates within tolerance (1mm = at the snap position)
+
+  // Grid snapping
+  if (snapToGrid) {
+    const gridCandidate = snapToGridPoint(cursorWorldMm, viewport);
+    if (gridCandidate && vec.distance(cursorWorldMm, gridCandidate.point) <= TOLERANCE_MM) {
+      candidates.push(gridCandidate);
+    }
+  }
+
+  // Node snapping
+  if (snapToNodes) {
+    for (const node of scene.nodes.values()) {
+      if (excludeNodeIds.has(node.id)) continue;
+
+      const distanceMm = vec.distance(cursorWorldMm, node);
+
+      if (distanceMm <= TOLERANCE_MM) {
+        candidates.push({
+          point: { x: node.x, y: node.y },
+          type: 'node',
+          entityId: node.id,
+          priority: 9,
+          distancePx: distanceMm * viewport.scale,
+        });
+      }
+    }
+  }
+
+  // Guideline snapping
+  if (snapToGuidelines) {
+    const guidelines = generateNodeGuidelines(scene, excludeNodeIds, guidelineOrigin);
+
+    // Check for guideline intersections
+    const horizontalGuidelines = guidelines.filter(g => g.type === 'horizontal');
+    const verticalGuidelines = guidelines.filter(g => g.type === 'vertical');
+
+    for (const hGuideline of horizontalGuidelines) {
+      for (const vGuideline of verticalGuidelines) {
+        const intersection: Vec2 = {
+          x: vGuideline.value,
+          y: hGuideline.value,
+        };
+
+        const distanceMm = vec.distance(cursorWorldMm, intersection);
+
+        if (distanceMm <= TOLERANCE_MM) {
+          candidates.push({
+            point: intersection,
+            type: 'guideline-intersection',
+            entityId: `${hGuideline.nodeId}-${vGuideline.nodeId}`,
+            priority: 8,
+            distancePx: distanceMm * viewport.scale,
+            guidelines: [hGuideline, vGuideline],
+          });
+        }
+      }
+    }
+
+    // Single guideline snapping
+    for (const guideline of guidelines) {
+      let distance: number;
+      let snapPoint: Vec2;
+
+      if (guideline.type === 'horizontal') {
+        distance = Math.abs(cursorWorldMm.y - guideline.value);
+        snapPoint = { x: cursorWorldMm.x, y: guideline.value };
+      } else {
+        distance = Math.abs(cursorWorldMm.x - guideline.value);
+        snapPoint = { x: guideline.value, y: cursorWorldMm.y };
+      }
+
+      if (distance <= TOLERANCE_MM) {
+        candidates.push({
+          point: snapPoint,
+          type: 'guideline',
+          entityId: guideline.nodeId,
+          priority: 4,
+          distancePx: distance * viewport.scale,
+          guideline: guideline,
+        });
+      }
+    }
+  }
+
+  // Edge snapping
+  if (snapToEdges) {
+    for (const wall of scene.walls.values()) {
+      const nodeA = scene.nodes.get(wall.nodeAId);
+      const nodeB = scene.nodes.get(wall.nodeBId);
+
+      if (!nodeA || !nodeB) continue;
+
+      const projected = projectPointToSegment(cursorWorldMm, nodeA, nodeB);
+      const distanceMm = vec.distance(cursorWorldMm, projected.point);
+
+      if (distanceMm <= TOLERANCE_MM && projected.t > 0.05 && projected.t < 0.95) {
+        candidates.push({
+          point: projected.point,
+          type: 'edge',
+          entityId: wall.id,
+          priority: 6,
+          distancePx: distanceMm * viewport.scale,
+        });
+      }
+    }
+  }
+
+  // Midpoint snapping
+  if (snapToEdges) {
+    for (const wall of scene.walls.values()) {
+      const nodeA = scene.nodes.get(wall.nodeAId);
+      const nodeB = scene.nodes.get(wall.nodeBId);
+
+      if (!nodeA || !nodeB) continue;
+
+      const midpoint = {
+        x: (nodeA.x + nodeB.x) / 2,
+        y: (nodeA.y + nodeB.y) / 2,
+      };
+
+      const distanceMm = vec.distance(cursorWorldMm, midpoint);
+
+      if (distanceMm <= TOLERANCE_MM) {
+        candidates.push({
+          point: midpoint,
+          type: 'midpoint',
+          entityId: wall.id,
+          priority: 7,
+          distancePx: distanceMm * viewport.scale,
+        });
+      }
+    }
+  }
+
+  return candidates;
+}
+
+/**
  * Find the best snap candidate near a screen-space cursor position
  */
 export function findSnapCandidate(
