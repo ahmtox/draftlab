@@ -76,6 +76,8 @@ class FileStorage {
     const emptyScene: Scene = {
       nodes: new Map(),
       walls: new Map(),
+      rooms: new Map(),
+      fixtures: new Map(),
     };
 
     await this.saveProjectMeta(project);
@@ -130,6 +132,8 @@ class FileStorage {
       projectId,
       nodes: Array.from(scene.nodes.entries()),
       walls: Array.from(scene.walls.entries()),
+      rooms: Array.from(scene.rooms.entries()),
+      fixtures: Array.from(scene.fixtures.entries()),
     };
 
     return new Promise((resolve, reject) => {
@@ -173,8 +177,10 @@ class FileStorage {
 
         // Convert arrays back to Maps
         const scene: Scene = {
-          nodes: new Map(result.nodes),
-          walls: new Map(result.walls),
+          nodes: new Map(result.nodes ?? []),
+          walls: new Map(result.walls ?? []),
+          rooms: new Map(result.rooms ?? []),
+          fixtures: new Map(result.fixtures ?? []),
         };
 
         resolve(scene);

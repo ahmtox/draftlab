@@ -8,6 +8,7 @@ import { DEFAULT_ZOOM_SCALE } from '../core/constants';
 import { HeaderBar } from '../ui/chrome/HeaderBar';
 import { Sidebar } from '../ui/panels/Sidebar';
 import { WallProperties } from '../ui/panels/WallProperties';
+import { FixtureProperties } from '../ui/panels/FixtureProperties';
 import { ViewModeToggle } from '../ui/chrome/ViewModeToggle';
 import { DebugOverlay } from '../ui/debug/DebugOverlay';
 
@@ -73,9 +74,20 @@ export function EditorPage() {
 
       // Always set scene - either loaded or empty
       if (loadedScene) {
-        setScene(loadedScene);
+        // ✅ Migrate scene to ensure fixtures map exists (backward compatibility)
+        const migratedScene = {
+          ...loadedScene,
+          fixtures: loadedScene.fixtures || new Map(),
+        };
+        setScene(migratedScene);
       } else {
-        setScene({ nodes: new Map(), walls: new Map() });
+        // ✅ Initialize with empty fixtures map
+        setScene({ 
+          nodes: new Map(), 
+          walls: new Map(), 
+          rooms: new Map(),
+          fixtures: new Map(),
+        });
       }
 
       setLastSavedAt(project.updatedAt);

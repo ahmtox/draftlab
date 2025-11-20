@@ -1,8 +1,10 @@
 import { useStore } from '../../state/store';
 import { useState } from 'react';
 import { SettingsDialog } from '../dialogs/SettingsDialog';
+import { FixtureLibrary } from './FixtureLibrary';
+import type { FixtureSchema } from '../../core/fixtures/schema';
 
-type Tool = 'select' | 'wall' | 'room' | 'measure';
+type Tool = 'select' | 'wall' | 'room' | 'measure' | 'fixture'; // ✅ ADD 'fixture'
 
 interface ToolButton {
   id: Tool;
@@ -20,7 +22,18 @@ const tools: ToolButton[] = [
 export function Sidebar() {
   const activeTool = useStore((state) => state.activeTool);
   const setActiveTool = useStore((state) => state.setActiveTool);
+  const setActiveFixtureSchema = useStore((state) => state.setActiveFixtureSchema); // ✅ NEW
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [fixtureLibraryOpen, setFixtureLibraryOpen] = useState(false);
+
+  const handleSelectFixture = (schema: FixtureSchema) => {
+    console.log('Selected fixture:', schema);
+    
+    // ✅ Switch to fixture tool and store schema
+    setActiveTool('fixture');
+    setActiveFixtureSchema(schema);
+    setFixtureLibraryOpen(false);
+  };
 
   return (
     <>
@@ -45,7 +58,23 @@ export function Sidebar() {
         {/* Spacer */}
         <div className="flex-1" />
 
-        {/* Settings Button (at bottom) */}
+        {/* Fixture Library Button */}
+        <button
+          onClick={() => setFixtureLibraryOpen(true)}
+          className={`w-14 h-14 flex flex-col items-center justify-center rounded-xl text-lg transition-all shadow-sm border border-gray-200 ${
+            activeTool === 'fixture'
+              ? 'bg-sky-500 text-white shadow-sky-200'
+              : 'bg-white text-gray-600 hover:bg-sky-50 hover:text-sky-600'
+          }`}
+          title="Fixture Library"
+        >
+          <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+          </svg>
+          <span className="text-[8px] mt-0.5 font-medium">Fixtures</span>
+        </button>
+
+        {/* Settings Button */}
         <button
           onClick={() => setSettingsOpen(true)}
           className="w-14 h-14 flex flex-col items-center justify-center rounded-xl text-lg transition-all shadow-sm bg-white text-gray-600 hover:bg-gray-50 hover:text-gray-800 border border-gray-200"
@@ -59,10 +88,16 @@ export function Sidebar() {
         </button>
       </aside>
 
-      {/* Settings Dialog */}
+      {/* Dialogs */}
       <SettingsDialog 
         isOpen={settingsOpen} 
         onClose={() => setSettingsOpen(false)} 
+      />
+      
+      <FixtureLibrary 
+        isOpen={fixtureLibraryOpen} 
+        onClose={() => setFixtureLibraryOpen(false)}
+        onSelectFixture={handleSelectFixture}
       />
     </>
   );

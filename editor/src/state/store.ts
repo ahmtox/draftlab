@@ -7,6 +7,7 @@ import type { Vec2 } from '../core/math/vec';
 import { History } from '../core/commands/history';
 import { detectRooms } from '../core/topology/room-detect';
 import { clearMiterCache } from '../core/geometry/miter';
+import type { FixtureSchema } from '../core/fixtures/schema';
 
 type WallParams = {
   thicknessMm: number;
@@ -24,7 +25,7 @@ type DragState = {
 
 type UIState = {
   viewport: Viewport;
-  activeTool: 'select' | 'wall' | 'room' | 'measure';
+  activeTool: 'select' | 'wall' | 'room' | 'measure' | 'fixture';
   wallParams: WallParams;
   scene: Scene;
   currentProject: ProjectMeta | null;
@@ -32,30 +33,34 @@ type UIState = {
   isSaving: boolean;
   selectedWallIds: Set<string>;
   selectedRoomId: string | null;
+  selectedFixtureId: string | null; // ✅ NEW
   hoveredWallId: string | null;
   dragState: DragState;
   snapCandidateA: any | null;
   snapCandidateB: any | null;
   viewMode: '2D' | '3D';
   history: History;
-  isLiveDragging: boolean; // ✅ NEW
+  isLiveDragging: boolean;
+  activeFixtureSchema: FixtureSchema | null;
   
   setViewport: (viewport: Viewport) => void;
-  setActiveTool: (tool: 'select' | 'wall' | 'room' | 'measure') => void;
+  setActiveTool: (tool: 'select' | 'wall' | 'room' | 'measure' | 'fixture') => void;
   setWallParams: (params: WallParams) => void;
-  setScene: (scene: Scene, skipRoomDetection?: boolean) => void; // ✅ NEW parameter
+  setScene: (scene: Scene, skipRoomDetection?: boolean) => void;
   setCurrentProject: (project: ProjectMeta | null) => void;
   setLastSavedAt: (timestamp: number) => void;
   setIsSaving: (saving: boolean) => void;
   resetProject: () => void;
   setSelectedWallIds: (ids: Set<string>) => void;
   setSelectedRoomId: (id: string | null) => void;
+  setSelectedFixtureId: (id: string | null) => void; // ✅ NEW
   setHoveredWallId: (id: string | null) => void;
   setDragState: (state: Partial<DragState>) => void;
   setSnapCandidateA: (candidate: any | null) => void;
   setSnapCandidateB: (candidate: any | null) => void;
   setViewMode: (mode: '2D' | '3D') => void;
-  setIsLiveDragging: (dragging: boolean) => void; // ✅ NEW
+  setIsLiveDragging: (dragging: boolean) => void;
+  setActiveFixtureSchema: (schema: FixtureSchema | null) => void;
   undo: () => void;
   redo: () => void;
   detectAndUpdateRooms: () => void;
@@ -77,12 +82,14 @@ export const useStore = create<UIState>((set, get) => ({
     nodes: new Map(),
     walls: new Map(),
     rooms: new Map(),
+    fixtures: new Map(),
   },
   currentProject: null,
   lastSavedAt: null,
   isSaving: false,
   selectedWallIds: new Set(),
   selectedRoomId: null,
+  selectedFixtureId: null, // ✅ NEW
   hoveredWallId: null,
   dragState: {
     mode: null,
@@ -95,31 +102,41 @@ export const useStore = create<UIState>((set, get) => ({
   snapCandidateB: null,
   viewMode: '2D',
   history: new History(),
-  isLiveDragging: false, // ✅ NEW
+  isLiveDragging: false,
+  activeFixtureSchema: null,
 
   setViewport: (viewport) => set({ viewport }),
-  setActiveTool: (tool) => set({ activeTool: tool }),
+  
+  setActiveTool: (tool) => {
+    // Cancel fixture mode if switching away
+    if (get().activeTool === 'fixture' && tool !== 'fixture') {
+      set({ activeFixtureSchema: null });
+    }
+    
+    // ✅ Clear fixture selection when switching away from select tool
+    if (tool !== 'select') {
+      set({ selectedFixtureId: null });
+    }
+    
+    set({ activeTool: tool });
+  },
+  
   setWallParams: (params) => set({ wallParams: params }),
   
   setScene: (scene, skipRoomDetection = false) => {
     const currentScene = get().scene;
     
-    // ✅ Clear miter cache whenever scene changes
+    // Clear miter cache whenever scene changes
     clearMiterCache();
     
     // Check if walls or nodes actually changed
     const wallsChanged = currentScene.walls !== scene.walls;
     const nodesChanged = currentScene.nodes !== scene.nodes;
     
-    // ✅ UPDATED: Always re-detect rooms when topology changes (unless explicitly skipped)
+    // Always re-detect rooms when topology changes (unless explicitly skipped)
     if ((wallsChanged || nodesChanged) && !skipRoomDetection && !get().isLiveDragging) {
       // Detect rooms from scratch
       const detectedRooms = detectRooms(scene);
-      
-      // ✅ REMOVED: Label position preservation
-      // We now let the system compute fresh centroids each time
-      // This avoids stale half-edge references
-      
       const roomsMap = new Map(detectedRooms.map(r => [r.id, r]));
       
       set({ 
@@ -139,6 +156,7 @@ export const useStore = create<UIState>((set, get) => ({
   setIsSaving: (saving) => set({ isSaving: saving }),
   setSelectedWallIds: (ids) => set({ selectedWallIds: ids }),
   setSelectedRoomId: (id) => set({ selectedRoomId: id }),
+  setSelectedFixtureId: (id) => set({ selectedFixtureId: id }), // ✅ NEW
   setHoveredWallId: (id) => set({ hoveredWallId: id }),
   setDragState: (state) => set((prev) => ({ 
     dragState: { ...prev.dragState, ...state } 
@@ -146,16 +164,19 @@ export const useStore = create<UIState>((set, get) => ({
   setSnapCandidateA: (candidate) => set({ snapCandidateA: candidate }),
   setSnapCandidateB: (candidate) => set({ snapCandidateB: candidate }),
   setViewMode: (mode) => set({ viewMode: mode }),
-  setIsLiveDragging: (dragging) => set({ isLiveDragging: dragging }), // ✅ NEW
+  setIsLiveDragging: (dragging) => set({ isLiveDragging: dragging }),
+  setActiveFixtureSchema: (schema) => set({ activeFixtureSchema: schema }),
 
   resetProject: () => set({
     scene: {
       nodes: new Map(),
       walls: new Map(),
       rooms: new Map(),
+      fixtures: new Map(),
     },
     selectedWallIds: new Set(),
     selectedRoomId: null,
+    selectedFixtureId: null, // ✅ NEW
     hoveredWallId: null,
     dragState: {
       mode: null,
@@ -167,7 +188,8 @@ export const useStore = create<UIState>((set, get) => ({
     snapCandidateA: null,
     snapCandidateB: null,
     history: new History(),
-    isLiveDragging: false, // ✅ NEW
+    isLiveDragging: false,
+    activeFixtureSchema: null,
   }),
 
   undo: () => {

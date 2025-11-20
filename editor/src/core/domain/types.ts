@@ -29,8 +29,22 @@ export type Room = {
   color?: string;
 };
 
+export type Fixture = {
+  id: string;
+  kind: string; // key into fixture library
+  params: Record<string, any>; // numeric params in mm
+  anchor: {
+    type: 'wall' | 'room' | 'floor';
+    refId: string; // ID of anchored entity
+    t?: number; // parametric position on wall [0,1]
+  };
+  rotation?: number; // radians
+  position?: { x: number; y: number }; // for floor/room anchors (mm)
+};
+
 export type Scene = {
   nodes: Map<string, Node>;
   walls: Map<string, Wall>;
   rooms: Map<string, Room>;
+  fixtures: Map<string, Fixture>; // ✅ NEW
 };

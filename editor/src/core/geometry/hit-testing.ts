@@ -1,6 +1,7 @@
 import type { Vec2 } from '../math/vec';
 import type { Scene } from '../domain/types';
 import * as vec from '../math/vec';
+import { getFixture } from '../fixtures/library';
 
 /**
  * Hit test result for nodes on a wall
@@ -131,4 +132,56 @@ export function getConnectedWalls(
   }
 
   return connected;
+}
+
+/**
+ * Hit-test fixtures
+ * Returns fixture ID if hit, null otherwise
+ */
+export function hitTestFixtures(
+  worldMm: Vec2,
+  scene: Scene,
+  radiusMm: number
+): string | null {
+  if (!scene.fixtures) return null;
+
+  for (const [fixtureId, fixture] of scene.fixtures) {
+    if (!fixture.position) continue;
+
+    // Simple bounding box hit test
+    // TODO: Use actual fixture bounds from schema params
+    const schema = getFixture(fixture.kind);
+    if (!schema) continue;
+
+    // Get approximate bounds from params
+    let width = 1000; // default
+    let depth = 1000; // default
+
+    if (fixture.params.width) width = fixture.params.width;
+    if (fixture.params.length) depth = fixture.params.length;
+    if (fixture.params.depth) depth = fixture.params.depth;
+
+    // Apply rotation to bounds (simple AABB)
+    const halfWidth = width / 2;
+    const halfDepth = depth / 2;
+
+    // Transform point to fixture local space
+    const dx = worldMm.x - fixture.position.x;
+    const dy = worldMm.y - fixture.position.y;
+    const rotation = fixture.rotation || 0;
+    const cos = Math.cos(-rotation);
+    const sin = Math.sin(-rotation);
+    const localX = dx * cos - dy * sin;
+    const localY = dx * sin + dy * cos;
+
+    // Check if inside bounds
+    if (
+      Math.abs(localX) <= halfWidth + radiusMm &&
+      Math.abs(localY) <= halfDepth + radiusMm
+    ) {
+      return fixtureId;
+    }
+  }
+
+  return null;
 }
